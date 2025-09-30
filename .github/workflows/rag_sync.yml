@@ -1,0 +1,47 @@
+# ================================
+# FILE: /.github/workflows/rag_sync.yml
+# 목적: GitHub Actions가 정해진 시간(UTC)과 수동 실행으로 Cafe24의 동기화 웹훅을 호출
+# 메뉴 경로: GitHub 저장소 → Actions → New workflow → (Skip) → "set up a workflow yourself" → 아래 내용 저장
+# 비밀 값(Secrets) 필요: CAFE24_SYNC_URL, SYNC_TOKEN (아래 README 섹션 참조)
+# ================================
+name: RAG Sync (Cafe24 → Supabase)
+
+
+on:
+schedule:
+# 매일 02:00 KST(UTC+9) = 매일 17:00 UTC 전날
+- cron: '0 17 * * *'
+workflow_dispatch:
+inputs:
+mode:
+description: 'full | incremental'
+required: false
+default: 'incremental'
+since:
+description: 'YYYY-MM-DD (선택)'
+required: false
+default: ''
+async:
+description: '1=비동기 백그라운드 실행'
+required: false
+default: '1'
+
+
+jobs:
+call-webhook:
+runs-on: ubuntu-latest
+steps:
+- name: Call Cafe24 sync webhook
+env:
+URL: ${{ secrets.CAFE24_SYNC_URL }}
+TOKEN: ${{ secrets.SYNC_TOKEN }}
+MODE: ${{ github.event.inputs.mode || 'incremental' }}
+SINCE: ${{ github.event.inputs.since || '' }}
+ASYNC: ${{ github.event.inputs.async || '1' }}
+run: |
+echo "Calling: $URL"
+DATA=$(jq -n --arg m "$MODE" --arg s "$SINCE" --arg a "$ASYNC" '{mode:$m, since:$s, async:$a}')
+curl -sS -X POST "$URL" \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $TOKEN" \
+-d "$DATA"
