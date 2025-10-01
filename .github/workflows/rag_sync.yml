@@ -35,7 +35,7 @@ jobs:
             echo "Diag failed"; exit 1
           fi
 
-      - name: 2) SYNC (sync_webhook, synchronous)
+      - name: 2) SYNC (sync_webhook, synchronous via GET)
         env:
           URL:   ${{ secrets.CAFE24_SYNC_URL }}
           TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -43,11 +43,12 @@ jobs:
           SINCE: ${{ github.event.inputs.since || '' }}
           ASYNC: ${{ github.event.inputs.async || '0' }}  # 먼저 동기로 검사
         run: |
-          echo "POST $URL (webhook)"
-          BODY="{\"mode\":\"$MODE\",\"since\":\"$SINCE\",\"async\":\"$ASYNC\"}"
-          CODE=$(curl -sS -X POST "$URL?token=$TOKEN" \
-                   -H "Content-Type: application/json" \
-                   -d "$BODY" \
+          echo "GET $URL (webhook)"
+          CODE=$(curl -sS -G "$URL" \
+                   --data-urlencode "token=$TOKEN" \
+                   --data-urlencode "mode=$MODE" \
+                   --data-urlencode "since=$SINCE" \
+                   --data-urlencode "async=$ASYNC" \
                    -D headers.txt -o body.txt -w "%{http_code}")
           echo "HTTP_CODE=$CODE"
           echo "----- SYNC headers -----"; cat headers.txt || true
