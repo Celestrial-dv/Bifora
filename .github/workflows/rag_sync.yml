@@ -25,12 +25,15 @@ jobs:
           TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           echo "GET $DIAG (diag)"
-          curl -sS -G "$DIAG/../sync_diag.php" --data-urlencode "token=$TOKEN" -D diag_headers.txt -o diag_body.txt -w "\nHTTP_CODE=%{http_code}\n"
-          echo "---- DIAG headers ----"; cat diag_headers.txt || true
-          echo "---- DIAG body ----";    cat diag_body.txt    || true
-          code=$(grep HTTP_CODE diag_body.txt | sed 's/.*=//')
-          # diag는 200이어야 통과
-          if [ "$code" != "200" ]; then echo "Diag failed"; exit 1; fi
+          CODE=$(curl -sS -G "$DIAG/../sync_diag.php" \
+                   --data-urlencode "token=$TOKEN" \
+                   -D diag_headers.txt -o diag_body.txt -w "%{http_code}")
+          echo "HTTP_CODE=$CODE"
+          echo "----- DIAG headers -----"; cat diag_headers.txt || true
+          echo "----- DIAG body -----";    cat diag_body.txt    || true
+          if [ "$CODE" != "200" ]; then
+            echo "Diag failed"; exit 1
+          fi
 
       - name: 2) SYNC (sync_webhook, synchronous)
         env:
@@ -38,20 +41,18 @@ jobs:
           TOKEN: ${{ secrets.SYNC_TOKEN }}
           MODE:  ${{ github.event.inputs.mode  || 'full' }}
           SINCE: ${{ github.event.inputs.since || '' }}
-          ASYNC: ${{ github.event.inputs.async || '0' }}
+          ASYNC: ${{ github.event.inputs.async || '0' }}  # 먼저 동기로 검사
         run: |
           echo "POST $URL (webhook)"
-          # GET 방식으로도 동작하도록 ?token= 전달 + POST body 병행
           BODY="{\"mode\":\"$MODE\",\"since\":\"$SINCE\",\"async\":\"$ASYNC\"}"
-          curl -sS -X POST "$URL?token=$TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$BODY" \
-            -D headers.txt -o body.txt -w "\nHTTP_CODE=%{http_code}\n"
-          echo "---- SYNC headers ----"; cat headers.txt || true
-          echo "---- SYNC body ----";    cat body.txt    || true
-          code=$(grep HTTP_CODE body.txt | sed 's/.*=//')
-          if [ "$code" = "200" ] || [ "$code" = "202" ]; then
-            echo "OK"
-          else
-            exit 1
+          CODE=$(curl -sS -X POST "$URL?token=$TOKEN" \
+                   -H "Content-Type: application/json" \
+                   -d "$BODY" \
+                   -D headers.txt -o body.txt -w "%{http_code}")
+          echo "HTTP_CODE=$CODE"
+          echo "----- SYNC headers -----"; cat headers.txt || true
+          echo "----- SYNC body -----";    cat body.txt    || true
+          if [ "$CODE" != "200" ] && [ "$CODE" != "202" ]; then
+            echo "Sync failed"; exit 1
           fi
+
