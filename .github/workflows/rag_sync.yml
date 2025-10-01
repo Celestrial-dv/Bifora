@@ -1,13 +1,14 @@
 name: RAG Sync (Cafe24 → Supabase)
 
 on:
-  schedule:
-    - cron: '0 17 * * *'   # 02:00 KST
   workflow_dispatch:
     inputs:
-      mode:  { description: 'full | incremental', required: false, default: 'incremental' }
+      mode:  { description: 'full | incremental', required: false, default: 'full' }
       since: { description: 'YYYY-MM-DD (optional)', required: false, default: '' }
-      async: { description: '1=background,0=sync', required: false, default: '1' }
+      async: { description: '1=background,0=sync', required: false, default: '0' }  # ← 먼저 0
+
+  schedule:
+    - cron: '0 17 * * *'   # 02:00 KST (자동화 전, 수동으로 먼저)
 
 jobs:
   call-webhook:
@@ -22,27 +23,26 @@ jobs:
         env:
           URL:   ${{ secrets.CAFE24_SYNC_URL }}
           TOKEN: ${{ secrets.SYNC_TOKEN }}
-          MODE:  ${{ github.event.inputs.mode  || 'incremental' }}
+          MODE:  ${{ github.event.inputs.mode  || 'full' }}
           SINCE: ${{ github.event.inputs.since || '' }}
-          ASYNC: ${{ github.event.inputs.async || '1' }}
+          ASYNC: ${{ github.event.inputs.async || '0' }}
         run: |
           echo "URL=$URL"
           BODY="{\"mode\":\"$MODE\",\"since\":\"$SINCE\",\"async\":\"$ASYNC\"}"
-          echo "Payload=$BODY"
-          # 응답 헤더/본문 저장 (실패시에도 본문 확인)
-          curl -sS -X POST "$URL" \
+          # Authorization 헤더 + 쿼리 token 동시 사용
+          curl -sS -X POST "$URL?token=$TOKEN" \
             -H "Content-Type: application/json" \
+            -H "X-Api-Key: $TOKEN" \
             -H "Authorization: Bearer $TOKEN" \
             -d "$BODY" \
             -D headers.txt -o body.txt -w "\nHTTP_CODE=%{http_code}\n"
-          echo "----- response headers -----"
-          cat headers.txt
-          echo "----- response body -----"
-          cat body.txt
-          CODE=$(grep HTTP_CODE body.txt || true)
+          echo "----- response headers -----"; cat headers.txt || true
+          echo "----- response body -----";    cat body.txt    || true
           # 200/202만 성공 처리
-          if grep -q "HTTP_CODE=20" body.txt; then
+          code=$(grep HTTP_CODE body.txt | sed 's/.*=//')
+          echo "HTTP_CODE=$code"
+          if [ "$code" = "200" ] || [ "$code" = "202" ]; then
             echo "OK"
           else
-            echo "Request failed"; exit 1
+            exit 1
           fi
