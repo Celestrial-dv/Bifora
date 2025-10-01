@@ -8,7 +8,7 @@ name: RAG Sync (Cafe24 → Supabase)
 
 on:
   schedule:
-    # 매일 02:00 KST = 17:00 UTC
+    # 매일 02:00 KST = UTC 17:00
     - cron: '0 17 * * *'
   workflow_dispatch:
     inputs:
@@ -35,6 +35,7 @@ jobs:
             echo "CAFE24_SYNC_URL is missing"; exit 1; fi
           if [ -z "${{ secrets.SYNC_TOKEN }}" ]; then
             echo "SYNC_TOKEN is missing"; exit 1; fi
+
       - name: Call Cafe24 sync webhook
         env:
           URL: ${{ secrets.CAFE24_SYNC_URL }}
@@ -47,7 +48,7 @@ jobs:
           # JSON 수동 구성 (jq 미사용)
           PAYLOAD="{\"mode\":\"$MODE\",\"since\":\"$SINCE\",\"async\":\"$ASYNC\"}"
           echo "Payload=$PAYLOAD"
-          # -f: 400/500 계열에서 실패로 처리
+          # -f: 400/500이면 실패 처리
           curl -fSs -X POST "$URL" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $TOKEN" \
