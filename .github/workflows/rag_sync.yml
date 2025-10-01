@@ -5,21 +5,34 @@ on:
     inputs:
       mode:  { description: 'full | incremental', required: false, default: 'full' }
       since: { description: 'YYYY-MM-DD (optional)', required: false, default: '' }
-      async: { description: '1=background,0=sync', required: false, default: '0' }  # ← 먼저 0
+      async: { description: '1=background,0=sync', required: false, default: '0' }  # 먼저 동기
 
   schedule:
-    - cron: '0 17 * * *'   # 02:00 KST (자동화 전, 수동으로 먼저)
+    - cron: '0 17 * * *'   # 02:00 KST
 
 jobs:
-  call-webhook:
+  run:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate secrets
+      - name: Check secrets
         run: |
           [ -n "${{ secrets.CAFE24_SYNC_URL }}" ] || (echo "CAFE24_SYNC_URL missing" && exit 1)
           [ -n "${{ secrets.SYNC_TOKEN }}" ] || (echo "SYNC_TOKEN missing" && exit 1)
 
-      - name: Call Cafe24 sync webhook (capture body)
+      - name: 1) DIAG (must return JSON)
+        env:
+          DIAG:  ${{ secrets.CAFE24_SYNC_URL }}
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          echo "GET $DIAG (diag)"
+          curl -sS -G "$DIAG/../sync_diag.php" --data-urlencode "token=$TOKEN" -D diag_headers.txt -o diag_body.txt -w "\nHTTP_CODE=%{http_code}\n"
+          echo "---- DIAG headers ----"; cat diag_headers.txt || true
+          echo "---- DIAG body ----";    cat diag_body.txt    || true
+          code=$(grep HTTP_CODE diag_body.txt | sed 's/.*=//')
+          # diag는 200이어야 통과
+          if [ "$code" != "200" ]; then echo "Diag failed"; exit 1; fi
+
+      - name: 2) SYNC (sync_webhook, synchronous)
         env:
           URL:   ${{ secrets.CAFE24_SYNC_URL }}
           TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -27,20 +40,16 @@ jobs:
           SINCE: ${{ github.event.inputs.since || '' }}
           ASYNC: ${{ github.event.inputs.async || '0' }}
         run: |
-          echo "URL=$URL"
+          echo "POST $URL (webhook)"
+          # GET 방식으로도 동작하도록 ?token= 전달 + POST body 병행
           BODY="{\"mode\":\"$MODE\",\"since\":\"$SINCE\",\"async\":\"$ASYNC\"}"
-          # Authorization 헤더 + 쿼리 token 동시 사용
           curl -sS -X POST "$URL?token=$TOKEN" \
             -H "Content-Type: application/json" \
-            -H "X-Api-Key: $TOKEN" \
-            -H "Authorization: Bearer $TOKEN" \
             -d "$BODY" \
             -D headers.txt -o body.txt -w "\nHTTP_CODE=%{http_code}\n"
-          echo "----- response headers -----"; cat headers.txt || true
-          echo "----- response body -----";    cat body.txt    || true
-          # 200/202만 성공 처리
+          echo "---- SYNC headers ----"; cat headers.txt || true
+          echo "---- SYNC body ----";    cat body.txt    || true
           code=$(grep HTTP_CODE body.txt | sed 's/.*=//')
-          echo "HTTP_CODE=$code"
           if [ "$code" = "200" ] || [ "$code" = "202" ]; then
             echo "OK"
           else
