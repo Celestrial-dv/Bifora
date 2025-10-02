@@ -35,20 +35,20 @@ jobs:
             echo "Diag failed"; exit 1
           fi
 
-      - name: 2) SYNC (sync_webhook, synchronous via GET+inline)
+      - name: 2) SYNC (sync_webhook, GET)
         env:
-          URL:   ${{ secrets.CAFE24_SYNC_URL }}
-          TOKEN: ${{ secrets.SYNC_TOKEN }}
-          MODE:  ${{ github.event.inputs.mode  || 'full' }}
-          SINCE: ${{ github.event.inputs.since || '' }}
+          URL:    ${{ secrets.CAFE24_SYNC_URL }}
+          TOKEN:  ${{ secrets.SYNC_TOKEN }}
+          MODE:   ${{ github.event.inputs.mode  || 'full' }}
+          SINCE:  ${{ github.event.inputs.since || '' }}
+          ASYNC_: ${{ github.event.inputs.async || '0' }}
         run: |
-          echo "GET $URL (webhook inline)"
+          echo "GET $URL (webhook)"
           CODE=$(curl -sS -G "$URL" \
-                   --data-urlencode "token=$TOKEN" \
-                   --data-urlencode "mode=$MODE" \
-                   --data-urlencode "since=$SINCE" \
-                   --data-urlencode "async=0" \
-                   --data-urlencode "inline=1" \
+                   --data-urlencode "t=$TOKEN" \
+                   --data-urlencode "m=$MODE" \
+                   --data-urlencode "s=$SINCE" \
+                   --data-urlencode "async=$ASYNC_" \
                    -D headers.txt -o body.txt -w "%{http_code}")
           echo "HTTP_CODE=$CODE"
           echo "----- SYNC headers -----"; cat headers.txt || true
@@ -56,5 +56,6 @@ jobs:
           if [ "$CODE" != "200" ] && [ "$CODE" != "202" ]; then
             echo "Sync failed"; exit 1
           fi
+
 
 
