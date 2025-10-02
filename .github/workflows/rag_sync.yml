@@ -1,74 +1,60 @@
-name: Cafe24 → Supabase RAG Sync
+name: RAG Sync (Cafe24 → Supabase)
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: "동기화 모드 (incremental | full)"
-        required: true
-        default: "incremental"
-        type: choice
-        options: 
-          - incremental
-          - full
-      since:
-        description: "증분 기준일(YYYY-MM-DD). full 모드면 비워두세요."
-        required: false
-        default: ""
-        type: string
+      mode:  { description: 'full | incremental', required: false, default: 'full' }
+      since: { description: 'YYYY-MM-DD (optional)', required: false, default: '' }
+      async: { description: '1=background,0=sync', required: false, default: '0' }  # 먼저 동기
+
   schedule:
-    # 매일 00:30 KST 실행 (UTC 15:30) - 필요 시 수정 가능, 불필요하면 삭제
-    - cron: "30 15 * * *"
+    - cron: '0 17 * * *'   # 02:00 KST
 
 jobs:
-  run-sync:
+  run:
     runs-on: ubuntu-latest
-    env:
-      BASE_URL: ${{ secrets.CAFE24_SYNC_URL }}
-      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
     steps:
-      - name: 입력 파라미터 정리
-        id: prep
-        shell: bash
+      - name: Check secrets
         run: |
-          MODE="${{ github.event.inputs.mode }}"
-          SINCE="${{ github.event.inputs.since }}"
-          if [ -z "$MODE" ]; then MODE="incremental"; fi
+          [ -n "${{ secrets.CAFE24_SYNC_URL }}" ] || (echo "CAFE24_SYNC_URL missing" && exit 1)
+          [ -n "${{ secrets.SYNC_TOKEN }}" ] || (echo "SYNC_TOKEN missing" && exit 1)
 
-          # token 마스킹
-          echo "::add-mask::$SYNC_TOKEN"
-
-          # 쿼리스트링 구성
-          if [ -n "$SINCE" ] && [ "$MODE" = "incremental" ]; then
-            QS="t=$SYNC_TOKEN&m=$MODE&s=$SINCE"
-          else
-            QS="t=$SYNC_TOKEN&m=$MODE"
+      - name: 1) DIAG (must return JSON)
+        env:
+          DIAG:  ${{ secrets.CAFE24_SYNC_URL }}
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          echo "GET $DIAG (diag)"
+          CODE=$(curl -sS -G "$DIAG/../sync_diag.php" \
+                   --data-urlencode "token=$TOKEN" \
+                   -D diag_headers.txt -o diag_body.txt -w "%{http_code}")
+          echo "HTTP_CODE=$CODE"
+          echo "----- DIAG headers -----"; cat diag_headers.txt || true
+          echo "----- DIAG body -----";    cat diag_body.txt    || true
+          if [ "$CODE" != "200" ]; then
+            echo "Diag failed"; exit 1
           fi
 
-          URL="${BASE_URL}?${QS}"
-
-          # 출력(로그엔 토큰 자동 마스킹)
-          echo "REQUEST_URL=${URL}" >> $GITHUB_OUTPUT
-
-      - name: 웹훅 호출
-        id: call
-        shell: bash
+      - name: 2) SYNC (sync_webhook, synchronous via GET+inline)
+        env:
+          URL:   ${{ secrets.CAFE24_SYNC_URL }}
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+          MODE:  ${{ github.event.inputs.mode  || 'full' }}
+          SINCE: ${{ github.event.inputs.since || '' }}
         run: |
-          set -euo pipefail
-          # 60초 타임아웃 + HTTP 오류 시 본문 포함 실패 처리
-          RESP=$(curl -sS --fail-with-body --max-time 60 "${{ steps.prep.outputs.REQUEST_URL }}")
-          echo "raw_response<<'END'" >> $GITHUB_OUTPUT
-          echo "$RESP" >> $GITHUB_OUTPUT
-          echo "END" >> $GITHUB_OUTPUT
-
-      - name: 응답 검사(JSON success/ok 플래그)
-        shell: bash
-        run: |
-          echo '${{ steps.call.outputs.raw_response }}' | jq .
-          OK=$(echo '${{ steps.call.outputs.raw_response }}' | jq -r '.success // .ok // empty')
-          if [ "$OK" = "true" ] || [ "$OK" = "1" ]; then
-            echo "✅ Sync 성공"
-          else
-            echo "❌ Sync 실패"
-            exit 1
+          echo "GET $URL (webhook inline)"
+          CODE=$(curl -sS -G "$URL" \
+                   --data-urlencode "token=$TOKEN" \
+                   --data-urlencode "mode=$MODE" \
+                   --data-urlencode "since=$SINCE" \
+                   --data-urlencode "async=0" \
+                   --data-urlencode "inline=1" \
+                   -D headers.txt -o body.txt -w "%{http_code}")
+          echo "HTTP_CODE=$CODE"
+          echo "----- SYNC headers -----"; cat headers.txt || true
+          echo "----- SYNC body -----";    cat body.txt    || true
+          if [ "$CODE" != "200" ] && [ "$CODE" != "202" ]; then
+            echo "Sync failed"; exit 1
           fi
+
+
