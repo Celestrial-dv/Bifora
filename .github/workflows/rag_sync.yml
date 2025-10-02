@@ -19,15 +19,15 @@ jobs:
           [ -n "${{ secrets.CAFE24_SYNC_URL }}" ] || (echo "CAFE24_SYNC_URL missing" && exit 1)
           [ -n "${{ secrets.SYNC_TOKEN }}" ] || (echo "SYNC_TOKEN missing" && exit 1)
 
-      - name: 1) DIAG (must return JSON)
-        env:
-          DIAG:  ${{ secrets.CAFE24_SYNC_URL }}
-          TOKEN: ${{ secrets.SYNC_TOKEN }}
-        run: |
-          echo "GET $DIAG (diag)"
-          CODE=$(curl -sS -G "$DIAG/../sync_diag.php" \
-                   --data-urlencode "token=$TOKEN" \
-                   -D diag_headers.txt -o diag_body.txt -w "%{http_code}")
+- name: 1) DIAG (must return JSON)
+  env:
+    DIAG:  ${{ secrets.CAFE24_SYNC_URL }}
+    TOKEN: ${{ secrets.SYNC_TOKEN }}
+  run: |
+    echo "GET $DIAG (diag)"
+    CODE=$(curl -sS -G "$DIAG/../sync_diag.php" \
+             --data-urlencode "token=$TOKEN" \
+             -D diag_headers.txt -o diag_body.txt -w "%{http_code}")
           echo "HTTP_CODE=$CODE"
           echo "----- DIAG headers -----"; cat diag_headers.txt || true
           echo "----- DIAG body -----";    cat diag_body.txt    || true
