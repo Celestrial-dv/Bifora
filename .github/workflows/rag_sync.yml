@@ -19,26 +19,23 @@ jobs:
           [ -n "${{ secrets.CAFE24_SYNC_URL }}" ] || (echo "CAFE24_SYNC_URL missing" && exit 1)
           [ -n "${{ secrets.SYNC_TOKEN }}" ] || (echo "SYNC_TOKEN missing" && exit 1)
 
-      - name: 1) DIAG (must return JSON)
+      - name: 0) URL normalize & assert path
         env:
-          DIAG:  ${{ secrets.CAFE24_SYNC_URL }}
-          TOKEN: ${{ secrets.SYNC_TOKEN }}
+          URL_RAW: ${{ secrets.CAFE24_SYNC_URL }}
         run: |
-          echo "GET $DIAG (diag)"
-          CODE=$(curl -sS -G "$DIAG/../sync_diag.php" \
-                   --data-urlencode "t=$TOKEN" \
-                   -D diag_headers.txt -o diag_body.txt -w "%{http_code}")
-
-          echo "HTTP_CODE=$CODE"
-          echo "----- DIAG headers -----"; cat diag_headers.txt || true
-          echo "----- DIAG body -----";    cat diag_body.txt    || true
-          if [ "$CODE" != "200" ]; then
-            echo "Diag failed"; exit 1
+          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r' | sed -e 's/[[:space:]]\+$//' -e 's:/*$::')
+          if [ -z "$URL_CLEAN" ]; then echo "Empty CAFE24_SYNC_URL"; exit 1; fi
+          echo "URL_CLEAN=$URL_CLEAN"
+          BASE=$(basename "$URL_CLEAN")
+          echo "BASENAME=$BASE"
+          if [ "$BASE" != "sync_webhook.php" ]; then
+            echo "Path must end with sync_webhook.php (current: $BASE)"; exit 1
           fi
+          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
 
-      - name: 2) SYNC (sync_webhook, GET)
+      - name: 1) SYNC (GET with query)
         env:
-          URL:    ${{ secrets.CAFE24_SYNC_URL }}
+          URL:    ${{ env.URL_CLEAN }}
           TOKEN:  ${{ secrets.SYNC_TOKEN }}
           MODE:   ${{ github.event.inputs.mode  || 'full' }}
           SINCE:  ${{ github.event.inputs.since || '' }}
@@ -50,7 +47,8 @@ jobs:
                    --data-urlencode "m=$MODE" \
                    --data-urlencode "s=$SINCE" \
                    --data-urlencode "async=$ASYNC_" \
-                   -D headers.txt -o body.txt -w "%{http_code}")
+                   -H "Accept: application/json" \
+                   -D headers.txt -o body.txt -w "%{http_code}" || true)
           echo "HTTP_CODE=$CODE"
           echo "----- SYNC headers -----"; cat headers.txt || true
           echo "----- SYNC body -----";    cat body.txt    || true
@@ -58,17 +56,23 @@ jobs:
             echo "Sync failed"; exit 1
           fi
 
-      - name: 2.0) URL sanity check (no trailing spaces/slash)
+      - name: 1.1) DIAG on failure (same endpoint + diag=1)
+        if: failure()
         env:
-          URL_RAW: ${{ secrets.CAFE24_SYNC_URL }}
+          URL:    ${{ env.URL_CLEAN }}
+          TOKEN:  ${{ secrets.SYNC_TOKEN }}
+          MODE:   ${{ github.event.inputs.mode  || 'full' }}
+          SINCE:  ${{ github.event.inputs.since || '' }}
+          ASYNC_: ${{ github.event.inputs.async || '0' }}
         run: |
-          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r' | sed -e 's/[[:space:]]\+$//' -e 's:/*$::')
-          if [ -z "$URL_CLEAN" ]; then echo "Empty URL"; exit 1; fi
-          # 헤더만 확인(200/400이면 경로 존재, 404면 경로 불일치)
-          CODE=$(curl -sS -I "$URL_CLEAN" -o /dev/null -w "%{http_code}" || true)
-          echo "HEAD $CODE"
-          if [ "$CODE" = "404" ]; then echo "Path not found. Check CAFE24_SYNC_URL."; exit 1; fi
-          echo "URL_OK"
-          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
-
-
+          echo "GET $URL (diag)"
+          curl -sS -G "$URL" \
+            --data-urlencode "t=$TOKEN" \
+            --data-urlencode "m=$MODE" \
+            --data-urlencode "s=$SINCE" \
+            --data-urlencode "async=$ASYNC_" \
+            --data-urlencode "diag=1" \
+            -H "Accept: application/json" \
+            -D diag_headers.txt -o diag_body.txt -w "HTTP_CODE=%{http_code}"
+          echo ""; echo "----- DIAG headers -----"; cat diag_headers.txt || true
+          echo "----- DIAG body -----";    cat diag_body.txt    || true
