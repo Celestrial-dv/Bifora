@@ -75,4 +75,4 @@ jobs:
             -H "Accept: application/json" \
             -D diag_headers.txt -o diag_body.txt -w "HTTP_CODE=%{http_code}"
           echo ""; echo "----- DIAG headers -----"; cat diag_headers.txt || true
-          echo "----- DIAG body -----";    cat diag_body.txt    || true
+          echo "----- DIAG body -----";    cat diag_body.txt    || true 
