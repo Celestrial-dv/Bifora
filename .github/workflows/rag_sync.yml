@@ -42,13 +42,19 @@ jobs:
           ASYNC_: ${{ github.event.inputs.async || '0' }}
         run: |
           echo "GET $URL (webhook)"
-          CODE=$(curl -sS -G "$URL" \
-                   --data-urlencode "t=$TOKEN" \
-                   --data-urlencode "m=$MODE" \
-                   --data-urlencode "s=$SINCE" \
-                   --data-urlencode "async=$ASYNC_" \
-                   -H "Accept: application/json" \
-                   -D headers.txt -o body.txt -w "%{http_code}" || true)
+          # Build query args without altering variable names
+          CURL_ARGS=(
+            -G "$URL"
+            --data-urlencode "t=$TOKEN"
+            --data-urlencode "m=$MODE"
+            --data-urlencode "async=$ASYNC_"
+            -H "Accept: application/json"
+            -D headers.txt -o body.txt -w "%{http_code}"
+          )
+          if [ -n "$SINCE" ]; then
+            CURL_ARGS+=( --data-urlencode "s=$SINCE" )
+          fi
+          CODE=$(curl -sS "${CURL_ARGS[@]}" || true)
           echo "HTTP_CODE=$CODE"
           echo "----- SYNC headers -----"; cat headers.txt || true
           echo "----- SYNC body -----";    cat body.txt    || true
@@ -66,13 +72,19 @@ jobs:
           ASYNC_: ${{ github.event.inputs.async || '0' }}
         run: |
           echo "GET $URL (diag)"
-          curl -sS -G "$URL" \
-            --data-urlencode "t=$TOKEN" \
-            --data-urlencode "m=$MODE" \
-            --data-urlencode "s=$SINCE" \
-            --data-urlencode "async=$ASYNC_" \
-            --data-urlencode "diag=1" \
-            -H "Accept: application/json" \
+          CURL_ARGS=(
+            -G "$URL"
+            --data-urlencode "t=$TOKEN"
+            --data-urlencode "m=$MODE"
+            --data-urlencode "async=$ASYNC_"
+            --data-urlencode "diag=1"
+            -H "Accept: application/json"
             -D diag_headers.txt -o diag_body.txt -w "HTTP_CODE=%{http_code}"
+          )
+          if [ -n "$SINCE" ]; then
+            CURL_ARGS+=( --data-urlencode "s=$SINCE" )
+          fi
+          curl -sS "${CURL_ARGS[@]}"
           echo ""; echo "----- DIAG headers -----"; cat diag_headers.txt || true
-          echo "----- DIAG body -----";    cat diag_body.txt    || true 
+          echo "----- DIAG body -----";    cat diag_body.txt    || true
+          
