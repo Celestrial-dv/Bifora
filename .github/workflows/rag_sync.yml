@@ -57,5 +57,17 @@ jobs:
             echo "Sync failed"; exit 1
           fi
 
+      - name: 2.0) URL sanity check (no trailing spaces/slash)
+        env:
+          URL_RAW: ${{ secrets.CAFE24_SYNC_URL }}
+        run: |
+          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r' | sed -e 's/[[:space:]]\+$//' -e 's:/*$::')
+          if [ -z "$URL_CLEAN" ]; then echo "Empty URL"; exit 1; fi
+          # 헤더만 확인(200/400이면 경로 존재, 404면 경로 불일치)
+          CODE=$(curl -sS -I "$URL_CLEAN" -o /dev/null -w "%{http_code}" || true)
+          echo "HEAD $CODE"
+          if [ "$CODE" = "404" ]; then echo "Path not found. Check CAFE24_SYNC_URL."; exit 1; fi
+          echo "URL_OK"
+          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
 
 
