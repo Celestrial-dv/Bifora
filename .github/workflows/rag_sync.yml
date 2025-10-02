@@ -3,88 +3,236 @@ name: RAG Sync (Cafe24 → Supabase)
 on:
   workflow_dispatch:
     inputs:
-      mode:  { description: 'full | incremental', required: false, default: 'full' }
-      since: { description: 'YYYY-MM-DD (optional)', required: false, default: '' }
-      async: { description: '1=background,0=sync', required: false, default: '0' }  # 먼저 동기
-
+      mode:
+        description: 'Sync mode: full | incremental'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - incremental
+      since:
+        description: 'Since date (YYYY-MM-DD, optional)'
+        required: false
+        default: ''
+        type: string
+      async:
+        description: 'Execution mode: 0=sync (recommended), 1=async'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+  
   schedule:
-    - cron: '0 17 * * *'   # 02:00 KST
+    # 매일 오전 2시 KST (17:00 UTC)
+    - cron: '0 17 * * *'
 
 jobs:
-  run:
+  sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
     steps:
-      - name: Check secrets
+      - name: 🔍 Validate secrets
         run: |
-          [ -n "${{ secrets.CAFE24_SYNC_URL }}" ] || (echo "CAFE24_SYNC_URL missing" && exit 1)
-          [ -n "${{ secrets.SYNC_TOKEN }}" ] || (echo "SYNC_TOKEN missing" && exit 1)
-
-      - name: 0) URL normalize & assert path
+          echo "Validating required secrets..."
+          
+          if [ -z "${{ secrets.CAFE24_SYNC_URL }}" ]; then
+            echo "❌ CAFE24_SYNC_URL is not set"
+            exit 1
+          fi
+          
+          if [ -z "${{ secrets.SYNC_TOKEN }}" ]; then
+            echo "❌ SYNC_TOKEN is not set"
+            exit 1
+          fi
+          
+          echo "✅ All secrets are present"
+      
+      - name: 🧹 Normalize URL
         env:
           URL_RAW: ${{ secrets.CAFE24_SYNC_URL }}
         run: |
-          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r' | sed -e 's/[[:space:]]\+$//' -e 's:/*$::')
-          if [ -z "$URL_CLEAN" ]; then echo "Empty CAFE24_SYNC_URL"; exit 1; fi
-          echo "URL_CLEAN=$URL_CLEAN"
-          BASE=$(basename "$URL_CLEAN")
-          echo "BASENAME=$BASE"
-          if [ "$BASE" != "sync_webhook.php" ]; then
-            echo "Path must end with sync_webhook.php (current: $BASE)"; exit 1
-          fi
-          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
-
-      - name: 1) SYNC (GET with query)
-        env:
-          URL:    ${{ env.URL_CLEAN }}
-          TOKEN:  ${{ secrets.SYNC_TOKEN }}
-          MODE:   ${{ github.event.inputs.mode  || 'full' }}
-          SINCE:  ${{ github.event.inputs.since || '' }}
-          ASYNC_: ${{ github.event.inputs.async || '0' }}
-        run: |
-          echo "GET $URL (webhook)"
-          # Build query args without altering variable names
-          CURL_ARGS=(
-            -G "$URL"
-            --data-urlencode "t=$TOKEN"
-            --data-urlencode "m=$MODE"
-            --data-urlencode "async=$ASYNC_"
-            -H "Accept: application/json"
-            -D headers.txt -o body.txt -w "%{http_code}"
-          )
-          if [ -n "$SINCE" ]; then
-            CURL_ARGS+=( --data-urlencode "s=$SINCE" )
-          fi
-          CODE=$(curl -sS "${CURL_ARGS[@]}" || true)
-          echo "HTTP_CODE=$CODE"
-          echo "----- SYNC headers -----"; cat headers.txt || true
-          echo "----- SYNC body -----";    cat body.txt    || true
-          if [ "$CODE" != "200" ] && [ "$CODE" != "202" ]; then
-            echo "Sync failed"; exit 1
-          fi
-
-      - name: 1.1) DIAG on failure (same endpoint + diag=1)
-        if: failure()
-        env:
-          URL:    ${{ env.URL_CLEAN }}
-          TOKEN:  ${{ secrets.SYNC_TOKEN }}
-          MODE:   ${{ github.event.inputs.mode  || 'full' }}
-          SINCE:  ${{ github.event.inputs.since || '' }}
-          ASYNC_: ${{ github.event.inputs.async || '0' }}
-        run: |
-          echo "GET $URL (diag)"
-          CURL_ARGS=(
-            -G "$URL"
-            --data-urlencode "t=$TOKEN"
-            --data-urlencode "m=$MODE"
-            --data-urlencode "async=$ASYNC_"
-            --data-urlencode "diag=1"
-            -H "Accept: application/json"
-            -D diag_headers.txt -o diag_body.txt -w "HTTP_CODE=%{http_code}"
-          )
-          if [ -n "$SINCE" ]; then
-            CURL_ARGS+=( --data-urlencode "s=$SINCE" )
-          fi
-          curl -sS "${CURL_ARGS[@]}"
-          echo ""; echo "----- DIAG headers -----"; cat diag_headers.txt || true
-          echo "----- DIAG body -----";    cat diag_body.txt    || true
+          echo "Normalizing URL..."
           
+          # 공백, 개행, trailing slash 제거
+          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r\n' | sed -e 's/[[:space:]]*$//' -e 's:/*$::')
+          
+          if [ -z "$URL_CLEAN" ]; then
+            echo "❌ URL is empty after normalization"
+            exit 1
+          fi
+          
+          # 경로 검증
+          BASENAME=$(basename "$URL_CLEAN")
+          if [ "$BASENAME" != "sync_webhook.php" ]; then
+            echo "⚠️  Warning: URL doesn't end with sync_webhook.php (got: $BASENAME)"
+          fi
+          
+          echo "✅ Normalized URL: $URL_CLEAN"
+          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
+      
+      - name: 🚀 Execute sync (Primary)
+        id: sync
+        env:
+          URL: ${{ env.URL_CLEAN }}
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+          MODE: ${{ github.event.inputs.mode || 'incremental' }}
+          SINCE: ${{ github.event.inputs.since || '' }}
+          ASYNC: ${{ github.event.inputs.async || '0' }}
+        run: |
+          echo "========================================"
+          echo "🎯 RAG Sync Execution"
+          echo "========================================"
+          echo "URL:   $URL"
+          echo "Mode:  $MODE"
+          echo "Since: ${SINCE:-'(not set)'}"
+          echo "Async: $ASYNC"
+          echo "========================================"
+          
+          # cURL 인자 구성
+          CURL_CMD=(
+            curl -sS -X GET "$URL"
+            -G
+            --data-urlencode "t=$TOKEN"
+            --data-urlencode "m=$MODE"
+            --data-urlencode "async=$ASYNC"
+          )
+          
+          # since 파라미터가 있으면 추가
+          if [ -n "$SINCE" ]; then
+            CURL_CMD+=( --data-urlencode "s=$SINCE" )
+          fi
+          
+          # 헤더/바디 저장
+          CURL_CMD+=(
+            -H "Accept: application/json"
+            -H "User-Agent: GitHub-Actions-RAG-Sync/1.0"
+            -D headers.txt
+            -o body.txt
+            -w "%{http_code}"
+          )
+          
+          # 실행
+          echo "📡 Sending request..."
+          HTTP_CODE=$("${CURL_CMD[@]}" || echo "000")
+          
+          echo ""
+          echo "========================================"
+          echo "📥 Response"
+          echo "========================================"
+          echo "HTTP Code: $HTTP_CODE"
+          echo ""
+          echo "--- Headers ---"
+          cat headers.txt || echo "(no headers)"
+          echo ""
+          echo "--- Body ---"
+          cat body.txt || echo "(no body)"
+          echo "========================================"
+          
+          # 결과 판정
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
+            echo "✅ Sync succeeded (HTTP $HTTP_CODE)"
+            
+            # JSON 파싱 시도
+            if command -v jq >/dev/null 2>&1; then
+              echo ""
+              echo "📊 Parsed response:"
+              cat body.txt | jq '.' || true
+            fi
+            
+            exit 0
+          else
+            echo "❌ Sync failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+      
+      - name: 🩺 Diagnostic on failure
+        if: failure() && steps.sync.conclusion == 'failure'
+        env:
+          URL: ${{ env.URL_CLEAN }}
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+          MODE: ${{ github.event.inputs.mode || 'incremental' }}
+          SINCE: ${{ github.event.inputs.since || '' }}
+          ASYNC: ${{ github.event.inputs.async || '0' }}
+        run: |
+          echo "========================================"
+          echo "🔬 Running diagnostics..."
+          echo "========================================"
+          
+          # Ping test
+          echo "1️⃣ Testing basic connectivity..."
+          HOST=$(echo "$URL" | sed -E 's#^https?://([^/]+).*#\1#')
+          ping -c 3 "$HOST" || echo "⚠️  Ping failed (may be blocked)"
+          
+          echo ""
+          echo "2️⃣ Testing DNS resolution..."
+          nslookup "$HOST" || echo "⚠️  DNS lookup failed"
+          
+          echo ""
+          echo "3️⃣ Fetching diagnostic info..."
+          
+          DIAG_CMD=(
+            curl -sS -X GET "$URL"
+            -G
+            --data-urlencode "t=$TOKEN"
+            --data-urlencode "m=$MODE"
+            --data-urlencode "async=$ASYNC"
+            --data-urlencode "diag=1"
+          )
+          
+          if [ -n "$SINCE" ]; then
+            DIAG_CMD+=( --data-urlencode "s=$SINCE" )
+          fi
+          
+          DIAG_CMD+=(
+            -H "Accept: application/json"
+            -D diag_headers.txt
+            -o diag_body.txt
+            -w "\nHTTP_CODE: %{http_code}\n"
+          )
+          
+          "${DIAG_CMD[@]}" || true
+          
+          echo ""
+          echo "--- Diagnostic Headers ---"
+          cat diag_headers.txt 2>/dev/null || echo "(no headers)"
+          
+          echo ""
+          echo "--- Diagnostic Body ---"
+          cat diag_body.txt 2>/dev/null || echo "(no body)"
+          
+          if command -v jq >/dev/null 2>&1 && [ -f diag_body.txt ]; then
+            echo ""
+            echo "--- Parsed Diagnostic ---"
+            cat diag_body.txt | jq '.' 2>/dev/null || true
+          fi
+          
+          echo ""
+          echo "========================================"
+          echo "💡 Troubleshooting tips:"
+          echo "1. Check if sync_webhook.php exists"
+          echo "2. Verify SYNC_TOKEN matches server config"
+          echo "3. Check server logs at /logs/sync_webhook.log"
+          echo "4. Ensure exec() is enabled on server"
+          echo "5. Verify PHP CLI path in find_php_cli.php"
+          echo "========================================"
+      
+      - name: 📊 Summary
+        if: always()
+        run: |
+          echo "### 📋 Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode**: ${{ github.event.inputs.mode || 'incremental' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Since**: ${{ github.event.inputs.since || '(auto)' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Async**: ${{ github.event.inputs.async || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ **Sync completed successfully**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Sync failed** - Check logs above" >> $GITHUB_STEP_SUMMARY
+          fi
