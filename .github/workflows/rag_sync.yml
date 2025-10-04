@@ -1,238 +1,176 @@
-name: RAG Sync (Cafe24 → Supabase)
+name: RAG Knowledge Base Sync
 
 on:
+  schedule:
+    # 매일 오전 3시(KST 기준 - UTC 18:00) 실행
+    - cron: '0 18 * * *'
+  
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Sync mode: full | incremental'
+      batch_size:
+        description: '배치 크기 (한 번에 처리할 행 수)'
         required: false
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - incremental
+        default: '100'
       since:
-        description: 'Since date (YYYY-MM-DD, optional)'
+        description: '동기화 시작 날짜 (YYYY-MM-DD)'
         required: false
         default: ''
-        type: string
-      async:
-        description: 'Execution mode: 0=sync (recommended), 1=async'
-        required: false
-        default: '0'
-        type: choice
-        options:
-          - '0'
-          - '1'
-  
-  schedule:
-    # 매일 오전 2시 KST (17:00 UTC)
-    - cron: '0 17 * * *'
+
+env:
+  WEBHOOK_URL: ${{ secrets.CAFE24_SYNC_URL }}
+  SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+  BATCH_SIZE: ${{ github.event.inputs.batch_size || '100' }}
+  SINCE: ${{ github.event.inputs.since || '' }}
+  MAX_ITERATIONS: 1000  # 최대 반복 횟수 (100 * 1000 = 100,000행)
+  SLEEP_SECONDS: 2      # API Rate Limit 방지
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120  # 2시간 타임아웃
     
     steps:
-      - name: 🔍 Validate secrets
+      - name: 📋 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Diagnostic Check
+        id: diag
         run: |
-          echo "Validating required secrets..."
+          echo "🔍 환경 진단 중..."
           
-          if [ -z "${{ secrets.CAFE24_SYNC_URL }}" ]; then
-            echo "❌ CAFE24_SYNC_URL is not set"
+          DIAG_URL="${WEBHOOK_URL}/sync_webhook.php?diag=1&t=${SYNC_TOKEN}"
+          
+          RESPONSE=$(curl -sS -w "\n%{http_code}" "$DIAG_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "$BODY" | jq '.' || echo "$BODY"
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::진단 실패: HTTP $HTTP_CODE"
             exit 1
           fi
           
-          if [ -z "${{ secrets.SYNC_TOKEN }}" ]; then
-            echo "❌ SYNC_TOKEN is not set"
+          # 토큰 검증 확인
+          TOKEN_OK=$(echo "$BODY" | jq -r '.token_match // false')
+          if [ "$TOKEN_OK" != "true" ]; then
+            echo "::error::토큰 불일치"
             exit 1
           fi
           
-          echo "✅ All secrets are present"
-      
-      - name: 🧹 Normalize URL
-        env:
-          URL_RAW: ${{ secrets.CAFE24_SYNC_URL }}
-        run: |
-          echo "Normalizing URL..."
-          
-          # 공백, 개행, trailing slash 제거
-          URL_CLEAN=$(printf '%s' "$URL_RAW" | tr -d '\r\n' | sed -e 's/[[:space:]]*$//' -e 's:/*$::')
-          
-          if [ -z "$URL_CLEAN" ]; then
-            echo "❌ URL is empty after normalization"
-            exit 1
-          fi
-          
-          # 경로 검증
-          BASENAME=$(basename "$URL_CLEAN")
-          if [ "$BASENAME" != "sync_webhook.php" ]; then
-            echo "⚠️  Warning: URL doesn't end with sync_webhook.php (got: $BASENAME)"
-          fi
-          
-          echo "✅ Normalized URL: $URL_CLEAN"
-          echo "URL_CLEAN=$URL_CLEAN" >> $GITHUB_ENV
-      
-      - name: 🚀 Execute sync (Primary)
+          echo "::notice::진단 완료 ✅"
+
+      - name: 🔄 Batch Sync Loop
         id: sync
-        env:
-          URL: ${{ env.URL_CLEAN }}
-          TOKEN: ${{ secrets.SYNC_TOKEN }}
-          MODE: ${{ github.event.inputs.mode || 'incremental' }}
-          SINCE: ${{ github.event.inputs.since || '' }}
-          ASYNC: ${{ github.event.inputs.async || '0' }}
         run: |
-          echo "========================================"
-          echo "🎯 RAG Sync Execution"
-          echo "========================================"
-          echo "URL:   $URL"
-          echo "Mode:  $MODE"
-          echo "Since: ${SINCE:-'(not set)'}"
-          echo "Async: $ASYNC"
-          echo "========================================"
+          echo "🔄 배치 동기화 시작..."
+          echo "배치 크기: $BATCH_SIZE"
+          echo "시작 날짜: ${SINCE:-'전체'}"
           
-          # cURL 인자 구성
-          CURL_CMD=(
-            curl -sS -X GET "$URL"
-            -G
-            --data-urlencode "t=$TOKEN"
-            --data-urlencode "m=$MODE"
-            --data-urlencode "async=$ASYNC"
-          )
+          OFFSET=0
+          TOTAL_PROCESSED=0
+          TOTAL_UPSERTED=0
+          ITERATION=0
+          HAS_MORE="true"
           
-          # since 파라미터가 있으면 추가
-          if [ -n "$SINCE" ]; then
-            CURL_CMD+=( --data-urlencode "s=$SINCE" )
-          fi
-          
-          # 헤더/바디 저장
-          CURL_CMD+=(
-            -H "Accept: application/json"
-            -H "User-Agent: GitHub-Actions-RAG-Sync/1.0"
-            -D headers.txt
-            -o body.txt
-            -w "%{http_code}"
-          )
-          
-          # 실행
-          echo "📡 Sending request..."
-          HTTP_CODE=$("${CURL_CMD[@]}" || echo "000")
-          
-          echo ""
-          echo "========================================"
-          echo "📥 Response"
-          echo "========================================"
-          echo "HTTP Code: $HTTP_CODE"
-          echo ""
-          echo "--- Headers ---"
-          cat headers.txt || echo "(no headers)"
-          echo ""
-          echo "--- Body ---"
-          cat body.txt || echo "(no body)"
-          echo "========================================"
-          
-          # 결과 판정
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
-            echo "✅ Sync succeeded (HTTP $HTTP_CODE)"
+          while [ "$HAS_MORE" = "true" ] && [ $ITERATION -lt $MAX_ITERATIONS ]; do
+            ITERATION=$((ITERATION + 1))
             
-            # JSON 파싱 시도
-            if command -v jq >/dev/null 2>&1; then
-              echo ""
-              echo "📊 Parsed response:"
-              cat body.txt | jq '.' || true
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📦 배치 #${ITERATION}: offset=${OFFSET}, batch=${BATCH_SIZE}"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # 동기화 요청
+            SYNC_URL="${WEBHOOK_URL}/sync_webhook.php"
+            PARAMS="t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&async=0"
+            
+            if [ -n "$SINCE" ]; then
+              PARAMS="${PARAMS}&s=${SINCE}"
             fi
             
-            exit 0
-          else
-            echo "❌ Sync failed (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-      
-      - name: 🩺 Diagnostic on failure
-        if: failure() && steps.sync.conclusion == 'failure'
-        env:
-          URL: ${{ env.URL_CLEAN }}
-          TOKEN: ${{ secrets.SYNC_TOKEN }}
-          MODE: ${{ github.event.inputs.mode || 'incremental' }}
-          SINCE: ${{ github.event.inputs.since || '' }}
-          ASYNC: ${{ github.event.inputs.async || '0' }}
-        run: |
-          echo "========================================"
-          echo "🔬 Running diagnostics..."
-          echo "========================================"
+            FULL_URL="${SYNC_URL}?${PARAMS}"
+            
+            RESPONSE=$(curl -sS -w "\n%{http_code}" --max-time 300 "$FULL_URL")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+            
+            echo "HTTP Status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "::warning::배치 #${ITERATION} 실패 (HTTP $HTTP_CODE)"
+              echo "$BODY"
+              
+              # 3회 연속 실패 시 중단
+              if [ $ITERATION -ge 3 ]; then
+                echo "::error::연속 실패로 중단"
+                exit 1
+              fi
+              
+              # 재시도 전 대기
+              sleep $((SLEEP_SECONDS * 2))
+              continue
+            fi
+            
+            # JSON 파싱
+            PROCESSED=$(echo "$BODY" | jq -r '.processed // 0')
+            UPSERTED=$(echo "$BODY" | jq -r '.upserted // 0')
+            HAS_MORE=$(echo "$BODY" | jq -r '.has_more // false')
+            
+            TOTAL_PROCESSED=$((TOTAL_PROCESSED + PROCESSED))
+            TOTAL_UPSERTED=$((TOTAL_UPSERTED + UPSERTED))
+            
+            echo "✅ 처리: ${PROCESSED}건, 업로드: ${UPSERTED}건"
+            echo "📊 누적: 처리=${TOTAL_PROCESSED}, 업로드=${TOTAL_UPSERTED}"
+            echo "🔄 다음 배치: $([ "$HAS_MORE" = "true" ] && echo "있음" || echo "없음")"
+            
+            # 다음 오프셋
+            OFFSET=$((OFFSET + BATCH_SIZE))
+            
+            # 더 이상 데이터 없으면 종료
+            if [ "$HAS_MORE" != "true" ]; then
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 동기화 완료!"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "총 배치 수: ${ITERATION}"
+              echo "총 처리: ${TOTAL_PROCESSED}건"
+              echo "총 업로드: ${TOTAL_UPSERTED}건"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              break
+            fi
+            
+            # Rate Limit 방지
+            sleep $SLEEP_SECONDS
+          done
           
-          # Ping test
-          echo "1️⃣ Testing basic connectivity..."
-          HOST=$(echo "$URL" | sed -E 's#^https?://([^/]+).*#\1#')
-          ping -c 3 "$HOST" || echo "⚠️  Ping failed (may be blocked)"
-          
-          echo ""
-          echo "2️⃣ Testing DNS resolution..."
-          nslookup "$HOST" || echo "⚠️  DNS lookup failed"
-          
-          echo ""
-          echo "3️⃣ Fetching diagnostic info..."
-          
-          DIAG_CMD=(
-            curl -sS -X GET "$URL"
-            -G
-            --data-urlencode "t=$TOKEN"
-            --data-urlencode "m=$MODE"
-            --data-urlencode "async=$ASYNC"
-            --data-urlencode "diag=1"
-          )
-          
-          if [ -n "$SINCE" ]; then
-            DIAG_CMD+=( --data-urlencode "s=$SINCE" )
-          fi
-          
-          DIAG_CMD+=(
-            -H "Accept: application/json"
-            -D diag_headers.txt
-            -o diag_body.txt
-            -w "\nHTTP_CODE: %{http_code}\n"
-          )
-          
-          "${DIAG_CMD[@]}" || true
-          
-          echo ""
-          echo "--- Diagnostic Headers ---"
-          cat diag_headers.txt 2>/dev/null || echo "(no headers)"
-          
-          echo ""
-          echo "--- Diagnostic Body ---"
-          cat diag_body.txt 2>/dev/null || echo "(no body)"
-          
-          if command -v jq >/dev/null 2>&1 && [ -f diag_body.txt ]; then
-            echo ""
-            echo "--- Parsed Diagnostic ---"
-            cat diag_body.txt | jq '.' 2>/dev/null || true
+          if [ $ITERATION -ge $MAX_ITERATIONS ]; then
+            echo "::warning::최대 반복 횟수(${MAX_ITERATIONS}) 도달"
           fi
           
-          echo ""
-          echo "========================================"
-          echo "💡 Troubleshooting tips:"
-          echo "1. Check if sync_webhook.php exists"
-          echo "2. Verify SYNC_TOKEN matches server config"
-          echo "3. Check server logs at /logs/sync_webhook.log"
-          echo "4. Ensure exec() is enabled on server"
-          echo "5. Verify PHP CLI path in find_php_cli.php"
-          echo "========================================"
-      
+          # GitHub Actions 출력
+          echo "total_processed=$TOTAL_PROCESSED" >> $GITHUB_OUTPUT
+          echo "total_upserted=$TOTAL_UPSERTED" >> $GITHUB_OUTPUT
+          echo "iterations=$ITERATION" >> $GITHUB_OUTPUT
+
       - name: 📊 Summary
         if: always()
         run: |
-          echo "### 📋 Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 RAG 동기화 결과" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Mode**: ${{ github.event.inputs.mode || 'incremental' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Since**: ${{ github.event.inputs.since || '(auto)' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Async**: ${{ github.event.inputs.async || '0' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 배치 수 | ${{ steps.sync.outputs.iterations || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 처리 건수 | ${{ steps.sync.outputs.total_processed || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 업로드 건수 | ${{ steps.sync.outputs.total_upserted || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 배치 크기 | ${BATCH_SIZE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 시작 날짜 | ${SINCE:-'전체'} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ **Sync completed successfully**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Sync failed** - Check logs above" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "✅ 작업 완료 시간: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🚨 Notify on Failure
+        if: failure()
+        run: |
+          echo "::error::RAG 동기화 실패"
+          echo "::error::로그를 확인하세요: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
