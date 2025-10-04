@@ -107,7 +107,7 @@ jobs:
             
             # ★ 증분 동기화 활성화
             SYNC_URL="${WEBHOOK_URL}/sync_webhook.php"
-            PARAMS="t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&async=0&skip-synced=1"
+            PARAMS="t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&async=0&skip-synced=1"  # ☆ 명시적 추가
             
             if [ -n "$SINCE" ]; then
               PARAMS="${PARAMS}&s=${SINCE}"
