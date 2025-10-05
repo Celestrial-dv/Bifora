@@ -32,10 +32,6 @@ on:
         description: '동기화 시작 날짜 (예: 2025-01-01)'
         required: false
         default: ''
-      skip_synced:
-        description: '이미 동기화된 데이터 건너뛰기 (1=예, 0=아니오)'
-        required: false
-        default: '1'
 
 env:
   WEBHOOK_URL: ${{ secrets.CAFE24_SYNC_URL }}
@@ -43,14 +39,10 @@ env:
   BATCH_SIZE: ${{ github.event.inputs.batch_size || '100' }}
   PARALLEL_WORKERS: ${{ github.event.inputs.parallel_workers || '2' }}
   SINCE: ${{ github.event.inputs.since || '' }}
-  SKIP_SYNCED: ${{ github.event.inputs.skip_synced || '1' }}
   MAX_ITERATIONS: 300
   SLEEP_SECONDS: 3
 
 jobs:
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔍 사전 진단: 서버 상태 및 토큰 검증
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   pre-check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -81,20 +73,13 @@ jobs:
           fi
           
           TOKEN_OK=$(echo "$BODY" | jq -r '.token_match // false')
-          EXEC_OK=$(echo "$BODY" | jq -r '.env.exec_allowed // false')
-          PHP_CLI=$(echo "$BODY" | jq -r '.php_cli.found // "none"')
           
           echo "::notice::✅ 토큰 검증: $TOKEN_OK"
-          echo "::notice::✅ exec 허용: $EXEC_OK"
-          echo "::notice::✅ PHP CLI: $PHP_CLI"
           
           if [ "$TOKEN_OK" != "true" ]; then
             echo "::error::토큰 불일치"
             exit 1
           fi
-          
-          echo "token_valid=$TOKEN_OK" >> $GITHUB_OUTPUT
-          echo "exec_allowed=$EXEC_OK" >> $GITHUB_OUTPUT
 
       - name: 📊 Diagnostic Summary
         run: |
@@ -106,29 +91,31 @@ jobs:
           echo "| 서버 연결 | ✅ 정상 |" >> $GITHUB_STEP_SUMMARY
           echo "| 배치 크기 | ${{ env.BATCH_SIZE }}건 |" >> $GITHUB_STEP_SUMMARY
           echo "| 워커 수 | ${{ env.PARALLEL_WORKERS }}개 |" >> $GITHUB_STEP_SUMMARY
-          echo "| 증분 동기화 | ${{ env.SKIP_SYNCED == '1' && '활성화' || '비활성화' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔄 병렬 동기화: 2개 워커로 안정적 처리
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   sync:
     needs: pre-check
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # ⏱️ 3시간 타임아웃
+    timeout-minutes: 180
     
     strategy:
       matrix:
-        worker: [0, 1]  # 🔧 2개 워커 고정
+        worker: [0, 1]
       fail-fast: false
       max-parallel: 2
+    
+    outputs:
+      worker_0_processed: ${{ steps.sync_0.outputs.total_processed }}
+      worker_0_upserted: ${{ steps.sync_0.outputs.total_upserted }}
+      worker_1_processed: ${{ steps.sync_1.outputs.total_processed }}
+      worker_1_upserted: ${{ steps.sync_1.outputs.total_upserted }}
     
     steps:
       - name: 📋 Checkout
         uses: actions/checkout@v4
 
       - name: 🔄 Parallel Sync (Worker ${{ matrix.worker }})
-        id: sync
+        id: sync_${{ matrix.worker }}
         run: |
           WORKER_ID=${{ matrix.worker }}
           TOTAL_WORKERS=${{ env.PARALLEL_WORKERS }}
@@ -136,133 +123,59 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🚀 워커 #${WORKER_ID} 시작"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📦 배치 크기: ${BATCH_SIZE}건"
-          echo "👥 총 워커 수: ${TOTAL_WORKERS}개"
-          echo "🔄 증분 동기화: ${{ env.SKIP_SYNCED == '1' && '활성화' || '비활성화' }}"
-          echo "📅 시작 날짜: ${SINCE:-전체}"
-          echo ""
           
-          # ★ 워커별 시작 오프셋
           OFFSET=$((BATCH_SIZE * WORKER_ID))
-          
           TOTAL_PROCESSED=0
           TOTAL_UPSERTED=0
-          TOTAL_SKIPPED=0
           ITERATION=0
           HAS_MORE="true"
-          CONSECUTIVE_FAILURES=0
           
           while [ "$HAS_MORE" = "true" ] && [ $ITERATION -lt $MAX_ITERATIONS ]; do
             ITERATION=$((ITERATION + 1))
             
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📦 워커 #${WORKER_ID} - 배치 #${ITERATION}"
-            echo "   offset=${OFFSET}, batch=${BATCH_SIZE}"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📦 워커 #${WORKER_ID} - 배치 #${ITERATION} (offset=${OFFSET})"
             
-            # ★ 증분 동기화 파라미터 포함
             SYNC_URL="${WEBHOOK_URL}/sync_webhook.php"
-            PARAMS="t=${SYNC_TOKEN}"
-            PARAMS="${PARAMS}&batch=${BATCH_SIZE}"
-            PARAMS="${PARAMS}&offset=${OFFSET}"
-            PARAMS="${PARAMS}&async=0"
-            PARAMS="${PARAMS}&skip-synced=${SKIP_SYNCED}"
+            PARAMS="t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&async=0"
             
             if [ -n "$SINCE" ]; then
               PARAMS="${PARAMS}&s=${SINCE}"
             fi
             
-            FULL_URL="${SYNC_URL}?${PARAMS}"
+            RESPONSE=$(curl -sS -w "\n%{http_code}" --max-time 300 "${SYNC_URL}?${PARAMS}")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
             
-            # ★ 재시도 로직 포함
-            MAX_RETRIES=3
-            RETRY=0
-            SUCCESS=false
+            echo "HTTP Status: $HTTP_CODE"
             
-            while [ $RETRY -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
-              if [ $RETRY -gt 0 ]; then
-                BACKOFF=$((RETRY * 5))
-                echo "⏳ 재시도 #${RETRY} - ${BACKOFF}초 대기 중..."
-                sleep $BACKOFF
-              fi
-              
-              RESPONSE=$(curl -sS -w "\n%{http_code}" --max-time 300 "$FULL_URL")
-              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-              BODY=$(echo "$RESPONSE" | sed '$d')
-              
-              echo "HTTP Status: $HTTP_CODE"
-              
-              if [ "$HTTP_CODE" = "200" ]; then
-                SUCCESS=true
-                CONSECUTIVE_FAILURES=0
-              else
-                RETRY=$((RETRY + 1))
-                echo "::warning::요청 실패 (HTTP $HTTP_CODE), 재시도 ${RETRY}/${MAX_RETRIES}"
-              fi
-            done
-            
-            if [ "$SUCCESS" != "true" ]; then
-              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-              echo "::error::워커 #${WORKER_ID} 배치 #${ITERATION} 실패 (연속 실패: ${CONSECUTIVE_FAILURES})"
-              echo "$BODY"
-              
-              if [ $CONSECUTIVE_FAILURES -ge 3 ]; then
-                echo "::error::연속 3회 실패로 워커 중단"
-                break
-              fi
-              
-              sleep $((SLEEP_SECONDS * 2))
-              continue
-            fi
-            
-            # JSON 파싱
-            PROCESSED=$(echo "$BODY" | jq -r '.processed // 0')
-            UPSERTED=$(echo "$BODY" | jq -r '.upserted // 0')
-            HAS_MORE=$(echo "$BODY" | jq -r '.has_more // false')
-            SKIPPED=$(echo "$BODY" | jq -r '.skipped_existing // 0')
-            
-            TOTAL_PROCESSED=$((TOTAL_PROCESSED + PROCESSED))
-            TOTAL_UPSERTED=$((TOTAL_UPSERTED + UPSERTED))
-            TOTAL_SKIPPED=$((TOTAL_SKIPPED + SKIPPED))
-            
-            echo "✅ 처리: ${PROCESSED}건, 업로드: ${UPSERTED}건, 건너뜀: ${SKIPPED}건"
-            echo "📊 워커 #${WORKER_ID} 누적:"
-            echo "   - 총 처리: ${TOTAL_PROCESSED}건"
-            echo "   - 총 업로드: ${TOTAL_UPSERTED}건"
-            echo "   - 총 건너뜀: ${TOTAL_SKIPPED}건"
-            echo "🔄 다음 배치: $([ "$HAS_MORE" = "true" ] && echo "있음" || echo "없음")"
-            
-            # ★ 다음 오프셋 = 현재 + (배치 크기 × 전체 워커 수)
-            OFFSET=$((OFFSET + BATCH_SIZE * TOTAL_WORKERS))
-            
-            if [ "$HAS_MORE" != "true" ]; then
-              echo ""
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "🎉 워커 #${WORKER_ID} 완료!"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-              echo "총 배치 수: ${ITERATION}"
-              echo "총 처리: ${TOTAL_PROCESSED}건"
-              echo "총 업로드: ${TOTAL_UPSERTED}건"
-              echo "총 건너뜀: ${TOTAL_SKIPPED}건"
-              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "::error::워커 #${WORKER_ID} 배치 실패"
               break
             fi
             
-            # ★ API rate limit 준수를 위한 대기
+            PROCESSED=$(echo "$BODY" | jq -r '.batch.processed // 0')
+            UPSERTED=$(echo "$BODY" | jq -r '.batch.upserted // 0')
+            HAS_MORE=$(echo "$BODY" | jq -r '.config.has_more // false')
+            
+            TOTAL_PROCESSED=$((TOTAL_PROCESSED + PROCESSED))
+            TOTAL_UPSERTED=$((TOTAL_UPSERTED + UPSERTED))
+            
+            echo "✅ 처리: ${PROCESSED}건, 업로드: ${UPSERTED}건"
+            echo "📊 누적: 처리 ${TOTAL_PROCESSED}건, 업로드 ${TOTAL_UPSERTED}건"
+            
+            OFFSET=$((OFFSET + BATCH_SIZE * TOTAL_WORKERS))
+            
+            if [ "$HAS_MORE" != "true" ]; then
+              echo "🎉 워커 #${WORKER_ID} 완료"
+              break
+            fi
+            
             sleep $SLEEP_SECONDS
           done
           
-          if [ $ITERATION -ge $MAX_ITERATIONS ]; then
-            echo "::warning::워커 #${WORKER_ID} 최대 반복 횟수(${MAX_ITERATIONS}) 도달"
-          fi
-          
-          # GitHub Actions Output 설정
           echo "total_processed=$TOTAL_PROCESSED" >> $GITHUB_OUTPUT
           echo "total_upserted=$TOTAL_UPSERTED" >> $GITHUB_OUTPUT
-          echo "total_skipped=$TOTAL_SKIPPED" >> $GITHUB_OUTPUT
           echo "iterations=$ITERATION" >> $GITHUB_OUTPUT
-          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
 
       - name: 📊 Worker Summary
         if: always()
@@ -272,21 +185,49 @@ jobs:
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| 워커 ID | ${{ matrix.worker }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 배치 수 | ${{ steps.sync.outputs.iterations || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 처리 건수 | ${{ steps.sync.outputs.total_processed || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 업로드 건수 | ${{ steps.sync.outputs.total_upserted || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 건너뜀 건수 | ${{ steps.sync.outputs.total_skipped || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 배치 수 | ${{ steps.sync_${{ matrix.worker }}.outputs.iterations || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 처리 건수 | ${{ steps.sync_${{ matrix.worker }}.outputs.total_processed || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 업로드 건수 | ${{ steps.sync_${{ matrix.worker }}.outputs.total_upserted || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 📊 최종 요약
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   summary:
     needs: sync
     runs-on: ubuntu-latest
     if: always()
     
     steps:
+      - name: 📊 Get Final Statistics
+        id: stats
+        run: |
+          echo "📊 전체 동기화 통계 조회 중..."
+          
+          STATS_URL="${{ secrets.CAFE24_SYNC_URL }}/sync_stats.php?t=${{ secrets.SYNC_TOKEN }}"
+          
+          RESPONSE=$(curl -sS -w "\n%{http_code}" "$STATS_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "$BODY" | jq '.' || echo "$BODY"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            MYSQL_TOTAL=$(echo "$BODY" | jq -r '.mysql_total // 0')
+            SUPABASE_SYNCED=$(echo "$BODY" | jq -r '.supabase_synced // 0')
+            SYNC_RATE=$(echo "$BODY" | jq -r '.sync_rate // 0')
+            REMAINING=$(echo "$BODY" | jq -r '.remaining // 0')
+            
+            echo "mysql_total=$MYSQL_TOTAL" >> $GITHUB_OUTPUT
+            echo "supabase_synced=$SUPABASE_SYNCED" >> $GITHUB_OUTPUT
+            echo "sync_rate=$SYNC_RATE" >> $GITHUB_OUTPUT
+            echo "remaining=$REMAINING" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::통계 조회 실패"
+            echo "mysql_total=0" >> $GITHUB_OUTPUT
+            echo "supabase_synced=0" >> $GITHUB_OUTPUT
+            echo "sync_rate=0" >> $GITHUB_OUTPUT
+            echo "remaining=0" >> $GITHUB_OUTPUT
+          fi
+
       - name: 📊 Final Summary
         run: |
           echo "## 🎉 전체 동기화 완료" >> $GITHUB_STEP_SUMMARY
@@ -294,15 +235,21 @@ jobs:
           echo "### 📋 실행 정보" >> $GITHUB_STEP_SUMMARY
           echo "- **워커 수**: ${{ env.PARALLEL_WORKERS }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **배치 크기**: ${{ env.BATCH_SIZE }}건" >> $GITHUB_STEP_SUMMARY
-          echo "- **증분 동기화**: ${{ env.SKIP_SYNCED == '1' && '✅ 활성화' || '❌ 비활성화' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 전체 동기화 현황" >> $GITHUB_STEP_SUMMARY
+          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| MySQL 전체 레코드 | ${{ steps.stats.outputs.mysql_total }}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase 동기화 완료 | ${{ steps.stats.outputs.supabase_synced }}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **동기화율** | **${{ steps.stats.outputs.sync_rate }}%** |" >> $GITHUB_STEP_SUMMARY
+          echo "| 남은 데이터 | ${{ steps.stats.outputs.remaining }}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📌 참고사항" >> $GITHUB_STEP_SUMMARY
-          echo "- 각 워커별 상세 결과는 위 섹션을 확인하세요" >> $GITHUB_STEP_SUMMARY
           echo "- 중복 체크는 (infodata_id, content) 기준으로 수행됩니다" >> $GITHUB_STEP_SUMMARY
-          echo "- 증분 동기화 활성화 시 이미 동기화된 데이터는 자동으로 건너뜁니다" >> $GITHUB_STEP_SUMMARY
+          echo "- 남은 데이터가 있으면 워크플로우를 재실행하세요" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 유용한 링크" >> $GITHUB_STEP_SUMMARY
           echo "- [Supabase 대시보드](https://supabase.com/dashboard)" >> $GITHUB_STEP_SUMMARY
-          echo "- [동기화 로그 확인](https://biplex.mycafe24.com/logs/sync_to_supabase.log)" >> $GITHUB_STEP_SUMMARY
+          echo "- [동기화 로그](https://biplex.mycafe24.com/logs/sync_to_supabase.log)" >> $GITHUB_STEP_SUMMARY
           
