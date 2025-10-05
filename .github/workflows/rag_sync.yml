@@ -104,18 +104,12 @@ jobs:
       fail-fast: false
       max-parallel: 2
     
-    outputs:
-      worker_0_processed: ${{ steps.sync_0.outputs.total_processed }}
-      worker_0_upserted: ${{ steps.sync_0.outputs.total_upserted }}
-      worker_1_processed: ${{ steps.sync_1.outputs.total_processed }}
-      worker_1_upserted: ${{ steps.sync_1.outputs.total_upserted }}
-    
     steps:
       - name: 📋 Checkout
         uses: actions/checkout@v4
 
       - name: 🔄 Parallel Sync (Worker ${{ matrix.worker }})
-        id: sync_${{ matrix.worker }}
+        id: sync
         run: |
           WORKER_ID=${{ matrix.worker }}
           TOTAL_WORKERS=${{ env.PARALLEL_WORKERS }}
@@ -176,6 +170,7 @@ jobs:
           echo "total_processed=$TOTAL_PROCESSED" >> $GITHUB_OUTPUT
           echo "total_upserted=$TOTAL_UPSERTED" >> $GITHUB_OUTPUT
           echo "iterations=$ITERATION" >> $GITHUB_OUTPUT
+          echo "worker_id=$WORKER_ID" >> $GITHUB_OUTPUT
 
       - name: 📊 Worker Summary
         if: always()
@@ -185,9 +180,9 @@ jobs:
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| 워커 ID | ${{ matrix.worker }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 배치 수 | ${{ steps.sync_${{ matrix.worker }}.outputs.iterations || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 처리 건수 | ${{ steps.sync_${{ matrix.worker }}.outputs.total_processed || '0' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 업로드 건수 | ${{ steps.sync_${{ matrix.worker }}.outputs.total_upserted || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 배치 수 | ${{ steps.sync.outputs.iterations || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 처리 건수 | ${{ steps.sync.outputs.total_processed || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 업로드 건수 | ${{ steps.sync.outputs.total_upserted || '0' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
   summary:
@@ -215,17 +210,20 @@ jobs:
             SUPABASE_SYNCED=$(echo "$BODY" | jq -r '.supabase_synced // 0')
             SYNC_RATE=$(echo "$BODY" | jq -r '.sync_rate // 0')
             REMAINING=$(echo "$BODY" | jq -r '.remaining // 0')
+            TOTAL_CHUNKS=$(echo "$BODY" | jq -r '.supabase_total_chunks // 0')
             
             echo "mysql_total=$MYSQL_TOTAL" >> $GITHUB_OUTPUT
             echo "supabase_synced=$SUPABASE_SYNCED" >> $GITHUB_OUTPUT
             echo "sync_rate=$SYNC_RATE" >> $GITHUB_OUTPUT
             echo "remaining=$REMAINING" >> $GITHUB_OUTPUT
+            echo "total_chunks=$TOTAL_CHUNKS" >> $GITHUB_OUTPUT
           else
             echo "::warning::통계 조회 실패"
             echo "mysql_total=0" >> $GITHUB_OUTPUT
             echo "supabase_synced=0" >> $GITHUB_OUTPUT
             echo "sync_rate=0" >> $GITHUB_OUTPUT
             echo "remaining=0" >> $GITHUB_OUTPUT
+            echo "total_chunks=0" >> $GITHUB_OUTPUT
           fi
 
       - name: 📊 Final Summary
@@ -242,12 +240,29 @@ jobs:
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| MySQL 전체 레코드 | ${{ steps.stats.outputs.mysql_total }}건 |" >> $GITHUB_STEP_SUMMARY
           echo "| Supabase 동기화 완료 | ${{ steps.stats.outputs.supabase_synced }}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase 전체 청크 | ${{ steps.stats.outputs.total_chunks }}개 |" >> $GITHUB_STEP_SUMMARY
           echo "| **동기화율** | **${{ steps.stats.outputs.sync_rate }}%** |" >> $GITHUB_STEP_SUMMARY
           echo "| 남은 데이터 | ${{ steps.stats.outputs.remaining }}건 |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
+          REMAINING=${{ steps.stats.outputs.remaining }}
+          
+          if [ "$REMAINING" -gt 0 ]; then
+            echo "### ⚠️ 추가 작업 필요" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "아직 **${REMAINING}건**의 데이터가 남아있습니다." >> $GITHUB_STEP_SUMMARY
+            echo "워크플로우를 재실행하거나 자동 스케줄을 기다리세요." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ 동기화 완료" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "모든 데이터가 성공적으로 동기화되었습니다! 🎉" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "### 📌 참고사항" >> $GITHUB_STEP_SUMMARY
           echo "- 중복 체크는 (infodata_id, content) 기준으로 수행됩니다" >> $GITHUB_STEP_SUMMARY
-          echo "- 남은 데이터가 있으면 워크플로우를 재실행하세요" >> $GITHUB_STEP_SUMMARY
+          echo "- 1개 레코드 = 평균 2-3개 청크로 분할됩니다" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 유용한 링크" >> $GITHUB_STEP_SUMMARY
           echo "- [Supabase 대시보드](https://supabase.com/dashboard)" >> $GITHUB_STEP_SUMMARY
