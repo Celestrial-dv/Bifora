@@ -304,5 +304,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 유용한 링크" >> $GITHUB_STEP_SUMMARY
           echo "- [Supabase 대시보드](https://supabase.com/dashboard)" >> $GITHUB_STEP_SUMMARY
-          echo "- [동기화 로그 확인](https://biplex.mycafe24.com/biplex/logs/sync_to_supabase.log)" >> $GITHUB_STEP_SUMMARY
+          echo "- [동기화 로그 확인](https://biplex.mycafe24.com/logs/sync_to_supabase.log)" >> $GITHUB_STEP_SUMMARY
           
