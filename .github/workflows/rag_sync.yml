@@ -30,7 +30,7 @@ on:
         default: '2'
 
 env:
-  CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
+  CAFE24_BASE_URL: ${{ secrets.CAFE24_BASE_URL }}
   SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
@@ -56,8 +56,10 @@ jobs:
             exit 1
           fi
           
-          # 서버 연결 테스트
-          DIAG_URL="${{ env.CAFE24_SYNC_URL }}&diag=1"
+          # ✅ URL 구성 수정: 쿼리 파라미터 올바르게 연결
+          DIAG_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&diag=1"
+          
+          echo "🔗 진단 URL: $DIAG_URL"
           
           RESPONSE=$(curl -s -w "\n%{http_code}" "$DIAG_URL")
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -80,15 +82,14 @@ jobs:
         run: |
           echo "📊 Supabase 통계 조회 중..."
           
-          # sync_stats.php URL 생성 (sync_webhook.php를 sync_stats.php로 교체)
-          STATS_URL=$(echo "${{ env.CAFE24_SYNC_URL }}" | sed 's/sync_webhook\.php/sync_stats.php/')
+          # ✅ URL 구성 수정
+          STATS_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
           RESPONSE=$(curl -s "$STATS_URL")
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
           
-          # JSON 파싱
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
           SUPABASE_CHUNKS=$(echo "$RESPONSE" | jq -r '.supabase_total_chunks // 0')
@@ -140,7 +141,6 @@ jobs:
           echo "  - 워커 ID: $WORKER_ID"
           echo "  - 배치 크기: $BATCH_SIZE"
           
-          # 초기 오프셋 계산
           OFFSET=$((WORKER_ID * BATCH_SIZE))
           
           TOTAL_PROCESSED=0
@@ -154,8 +154,8 @@ jobs:
             echo "📦 배치 #$BATCH_COUNT (오프셋: $OFFSET)"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            # 동기화 요청
-            REQUEST_URL="${{ env.WEBHOOK_URL }}&batch=${BATCH_SIZE}&offset=${OFFSET}"
+            # ✅ URL 구성 수정
+            REQUEST_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             
             RESPONSE=$(curl -s -w "\n%{http_code}" "$REQUEST_URL")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -167,12 +167,10 @@ jobs:
               break
             fi
             
-            # JSON 파싱
             BATCH_PROCESSED=$(echo "$BODY" | jq -r '.batch.processed // 0')
             BATCH_UPSERTED=$(echo "$BODY" | jq -r '.batch.upserted // 0')
             HAS_MORE=$(echo "$BODY" | jq -r '.config.has_more // false')
             
-            # 전체 통계 추출
             MYSQL_TOTAL=$(echo "$BODY" | jq -r '.overall.mysql_total // 0')
             SUPABASE_SYNCED=$(echo "$BODY" | jq -r '.overall.supabase_synced // 0')
             SUPABASE_CHUNKS=$(echo "$BODY" | jq -r '.overall.supabase_total_chunks // 0')
@@ -186,16 +184,13 @@ jobs:
             TOTAL_PROCESSED=$((TOTAL_PROCESSED + BATCH_PROCESSED))
             TOTAL_UPSERTED=$((TOTAL_UPSERTED + BATCH_UPSERTED))
             
-            # 다음 배치 계산 (워커 수만큼 건너뛰기)
             OFFSET=$((OFFSET + BATCH_SIZE * 2))
             
-            # 종료 조건
             if [ "$HAS_MORE" = "false" ] || [ "$BATCH_PROCESSED" = "0" ]; then
               echo "✅ 워커 완료"
               break
             fi
             
-            # Rate limit 방지
             sleep 1
           done
           
@@ -233,12 +228,14 @@ jobs:
         run: |
           echo "📊 최종 Supabase 통계 조회 중..."
           
-          RESPONSE=$(curl -s "${{ env.STATS_URL }}")
+          # ✅ URL 구성 수정
+          STATS_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
+          
+          RESPONSE=$(curl -s "$STATS_URL")
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
           
-          # JSON 파싱
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
           SUPABASE_CHUNKS=$(echo "$RESPONSE" | jq -r '.supabase_total_chunks // 0')
@@ -273,5 +270,5 @@ jobs:
           echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '100' }}건" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
-          
+
           
