@@ -59,13 +59,14 @@ jobs:
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           
+          # ⚡ 토큰을 명시적으로 추가
           if [[ "$BASE_URL" == *"?"* ]]; then
-            DIAG_URL="${BASE_URL}&diag=1"
+            DIAG_URL="${BASE_URL}&t=${{ env.SYNC_TOKEN }}&diag=1"
           else
-            DIAG_URL="${BASE_URL}?diag=1"
+            DIAG_URL="${BASE_URL}?t=${{ env.SYNC_TOKEN }}&diag=1"
           fi
           
-          echo "🔗 진단 URL: $DIAG_URL"
+          echo "🔗 진단 URL: ${DIAG_URL%\&t=*}&t=***${DIAG_URL##*\&t=*}"
           
           RESPONSE=$(curl -s -w "\n%{http_code}" "$DIAG_URL")
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -91,17 +92,15 @@ jobs:
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           BASE_DIR=$(dirname "$BASE_URL")
           
-          # ⚡ 수정: 토큰을 포함한 완전한 URL 구성
           STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
-          echo "🔗 통계 URL: $STATS_URL"
+          echo "🔗 통계 URL: ${STATS_URL%\?t=*}?t=***"
           
           RESPONSE=$(curl -s "$STATS_URL")
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
           
-          # 오류 체크
           ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
           if [ -n "$ERROR" ]; then
             echo "❌ 통계 조회 실패: $ERROR"
@@ -162,6 +161,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          TOKEN="${{ env.SYNC_TOKEN }}"
           
           OFFSET=$((WORKER_ID * BATCH_SIZE))
           
@@ -179,13 +179,16 @@ jobs:
             echo "   오프셋: $OFFSET"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
+            # ⚡ 핵심 수정: 토큰을 항상 명시적으로 포함
             if [[ "$BASE_URL" == *"?"* ]]; then
-              REQUEST_URL="${BASE_URL}&batch=${BATCH_SIZE}&offset=${OFFSET}"
+              REQUEST_URL="${BASE_URL}&t=${TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             else
-              REQUEST_URL="${BASE_URL}?batch=${BATCH_SIZE}&offset=${OFFSET}"
+              REQUEST_URL="${BASE_URL}?t=${TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             fi
             
-            echo "🔗 요청 URL: $REQUEST_URL"
+            # 로그 출력 시 토큰 마스킹
+            MASKED_URL="${REQUEST_URL%\&t=*}&t=***&${REQUEST_URL##*\&batch=}"
+            echo "🔗 요청 URL: $MASKED_URL"
             
             RESPONSE=$(curl -s -w "\n%{http_code}" "$REQUEST_URL")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -194,6 +197,13 @@ jobs:
             if [ "$HTTP_CODE" != "200" ]; then
               echo "⚠️ 배치 실패: HTTP $HTTP_CODE"
               echo "$BODY"
+              
+              # 토큰 오류인 경우 즉시 종료
+              if echo "$BODY" | grep -q "TOKEN_REQUIRED\|INVALID_TOKEN\|Invalid token"; then
+                echo "❌ 토큰 오류 감지, 워커 종료"
+                exit 1
+              fi
+              
               break
             fi
             
@@ -277,10 +287,9 @@ jobs:
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           BASE_DIR=$(dirname "$BASE_URL")
           
-          # ⚡ 수정: 토큰을 포함한 완전한 URL 구성
           STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
-          echo "🔗 통계 URL: $STATS_URL"
+          echo "🔗 통계 URL: ${STATS_URL%\?t=*}?t=***"
           
           RESPONSE=$(curl -s "$STATS_URL")
           
@@ -321,7 +330,9 @@ jobs:
           echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '100' }}건" >> $GITHUB_STEP_SUMMARY
           echo "- **최대 반복**: ${{ github.event.inputs.max_iterations || '250' }}회" >> $GITHUB_STEP_SUMMARY
-          echo "- **완료 시간**: $(date -u '+%Y-%m-% %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+
+          
           
 
           
