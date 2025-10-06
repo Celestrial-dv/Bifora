@@ -30,7 +30,7 @@ on:
         default: '2'
 
 env:
-  CAFE24_BASE_URL: ${{ secrets.CAFE24_BASE_URL }}
+  CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
   SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
@@ -57,7 +57,7 @@ jobs:
           fi
           
           # ✅ URL 구성 수정: 쿼리 파라미터 올바르게 연결
-          DIAG_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&diag=1"
+          DIAG_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&diag=1"
           
           echo "🔗 진단 URL: $DIAG_URL"
           
@@ -83,7 +83,7 @@ jobs:
           echo "📊 Supabase 통계 조회 중..."
           
           # ✅ URL 구성 수정
-          STATS_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
+          STATS_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
           RESPONSE=$(curl -s "$STATS_URL")
           
@@ -155,7 +155,7 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
             # ✅ URL 구성 수정
-            REQUEST_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&batch=${BATCH_SIZE}&offset=${OFFSET}"
+            REQUEST_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             
             RESPONSE=$(curl -s -w "\n%{http_code}" "$REQUEST_URL")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -229,7 +229,7 @@ jobs:
           echo "📊 최종 Supabase 통계 조회 중..."
           
           # ✅ URL 구성 수정
-          STATS_URL="${{ env.CAFE24_BASE_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
+          STATS_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
           RESPONSE=$(curl -s "$STATS_URL")
           
