@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: '배치 크기 (기본값: 100)'
+        description: '배치 크기 (기본값: 50)'
         required: false
-        default: '100'
+        default: '50'
       workers:
         description: '워커 수 (기본값: 2)'
         required: false
@@ -149,7 +149,7 @@ jobs:
       - name: 🚀 반복 배치 동기화 실행
         id: sync_batches
         env:
-          BATCH_SIZE: ${{ github.event.inputs.batch_size || '100' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '50' }}
           WORKER_ID: ${{ matrix.worker_id }}
           MAX_ITERATIONS: ${{ github.event.inputs.max_iterations || '250' }}
         run: |
