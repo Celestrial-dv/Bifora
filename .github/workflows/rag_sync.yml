@@ -31,7 +31,7 @@ on:
 
 env:
   WEBHOOK_URL: ${{ secrets.CAFE24_WEBHOOK_URL }}
-  SYNC_TOKEN: ${{ secrets.SYNC_ACTION_TOKEN }}
+  SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
   STATS_URL: ${{ secrets.CAFE24_STATS_URL }}
 
 jobs:
@@ -52,7 +52,7 @@ jobs:
         id: check
         run: |
           if [ -z "${{ env.SYNC_TOKEN }}" ]; then
-            echo "❌ SYNC_ACTION_TOKEN이 설정되지 않았습니다."
+            echo "❌ SYNC_TOKEN이 설정되지 않았습니다."
             echo "can_proceed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
