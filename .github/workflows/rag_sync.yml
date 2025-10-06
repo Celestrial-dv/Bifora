@@ -30,9 +30,8 @@ on:
         default: '2'
 
 env:
-  WEBHOOK_URL: ${{ secrets.CAFE24_WEBHOOK_URL }}
+  CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
   SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
-  STATS_URL: ${{ secrets.CAFE24_STATS_URL }}
 
 jobs:
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -58,7 +57,7 @@ jobs:
           fi
           
           # 서버 연결 테스트
-          DIAG_URL="${{ env.WEBHOOK_URL }}&diag=1"
+          DIAG_URL="${{ env.CAFE24_SYNC_URL }}&diag=1"
           
           RESPONSE=$(curl -s -w "\n%{http_code}" "$DIAG_URL")
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -81,7 +80,10 @@ jobs:
         run: |
           echo "📊 Supabase 통계 조회 중..."
           
-          RESPONSE=$(curl -s "${{ env.STATS_URL }}")
+          # sync_stats.php URL 생성 (sync_webhook.php를 sync_stats.php로 교체)
+          STATS_URL=$(echo "${{ env.CAFE24_SYNC_URL }}" | sed 's/sync_webhook\.php/sync_stats.php/')
+          
+          RESPONSE=$(curl -s "$STATS_URL")
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
@@ -271,4 +273,5 @@ jobs:
           echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '100' }}건" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          
           
