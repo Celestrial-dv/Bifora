@@ -24,19 +24,16 @@ on:
         description: '배치 크기 (기본값: 100)'
         required: false
         default: '100'
-      workers:
-        description: '워커 수 (기본값: 2)'
+      max_batches:
+        description: '최대 배치 수 (기본값: 1000, 0=무제한)'
         required: false
-        default: '2'
+        default: '1000'
 
 env:
   CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
   SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔍 사전 진단 (Pre-flight Check)
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   preflight:
     name: 🔍 사전 진단
     runs-on: ubuntu-latest
@@ -56,10 +53,7 @@ jobs:
             exit 1
           fi
           
-          # ✅ URL 구성 수정: 쿼리 파라미터 올바르게 연결
           DIAG_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&diag=1"
-          
-          echo "🔗 진단 URL: $DIAG_URL"
           
           RESPONSE=$(curl -s -w "\n%{http_code}" "$DIAG_URL")
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -80,69 +74,37 @@ jobs:
         id: stats
         if: steps.check.outputs.can_proceed == 'true'
         run: |
-          echo "📊 Supabase 통계 조회 중..."
-          
-          # ✅ URL 구성 수정
           STATS_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
-          
           RESPONSE=$(curl -s "$STATS_URL")
           
-          echo "응답:"
           echo "$RESPONSE" | jq '.'
           
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
-          SUPABASE_CHUNKS=$(echo "$RESPONSE" | jq -r '.supabase_total_chunks // 0')
-          SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
           REMAINING=$(echo "$RESPONSE" | jq -r '.remaining // 0')
           
           echo "mysql_total=$MYSQL_TOTAL" >> $GITHUB_OUTPUT
           echo "supabase_synced=$SUPABASE_SYNCED" >> $GITHUB_OUTPUT
-          echo "supabase_chunks=$SUPABASE_CHUNKS" >> $GITHUB_OUTPUT
-          echo "sync_rate=$SYNC_RATE" >> $GITHUB_OUTPUT
           echo "remaining=$REMAINING" >> $GITHUB_OUTPUT
-          
-          echo "### 📊 현재 통계" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|---:|" >> $GITHUB_STEP_SUMMARY
-          echo "| MySQL 전체 | ${MYSQL_TOTAL}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Supabase 동기화 | ${SUPABASE_SYNCED}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Supabase 전체 청크 | ${SUPABASE_CHUNKS}개 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **동기화율** | **${SYNC_RATE}%** |" >> $GITHUB_STEP_SUMMARY
-          echo "| 남은 데이터 | ${REMAINING}건 |" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔄 병렬 동기화 (Parallel Sync)
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   sync:
-    name: 🔄 워커 ${{ matrix.worker_id }}
+    name: 🔄 전체 동기화
     runs-on: ubuntu-latest
     needs: preflight
     if: needs.preflight.outputs.can_proceed == 'true' && needs.preflight.outputs.remaining > 0
+    timeout-minutes: 180
     
-    strategy:
-      max-parallel: 2
-      matrix:
-        worker_id: [0, 1]
-    
-    outputs:
-      processed_0: ${{ steps.results.outputs.processed }}
-      upserted_0: ${{ steps.results.outputs.upserted }}
-      
     steps:
-      - name: 🚀 배치 동기화 실행
-        id: sync_batches
+      - name: 🚀 순차 배치 동기화
         env:
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '100' }}
-          WORKER_ID: ${{ matrix.worker_id }}
+          MAX_BATCHES: ${{ github.event.inputs.max_batches || '1000' }}
         run: |
-          echo "🔧 워커 설정:"
-          echo "  - 워커 ID: $WORKER_ID"
+          echo "🔧 동기화 설정:"
           echo "  - 배치 크기: $BATCH_SIZE"
+          echo "  - 최대 배치: $MAX_BATCHES"
           
-          OFFSET=$((WORKER_ID * BATCH_SIZE))
-          
+          OFFSET=0
           TOTAL_PROCESSED=0
           TOTAL_UPSERTED=0
           BATCH_COUNT=0
@@ -150,11 +112,16 @@ jobs:
           while true; do
             BATCH_COUNT=$((BATCH_COUNT + 1))
             
+            # 최대 배치 수 체크
+            if [ "$MAX_BATCHES" != "0" ] && [ "$BATCH_COUNT" -gt "$MAX_BATCHES" ]; then
+              echo "⏸️ 최대 배치 수($MAX_BATCHES) 도달"
+              break
+            fi
+            
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "📦 배치 #$BATCH_COUNT (오프셋: $OFFSET)"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            # ✅ URL 구성 수정
             REQUEST_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_webhook.php?t=${{ env.SYNC_TOKEN }}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             
             RESPONSE=$(curl -s -w "\n%{http_code}" "$REQUEST_URL")
@@ -167,55 +134,46 @@ jobs:
               break
             fi
             
+            # JSON 파싱
             BATCH_PROCESSED=$(echo "$BODY" | jq -r '.batch.processed // 0')
             BATCH_UPSERTED=$(echo "$BODY" | jq -r '.batch.upserted // 0')
             HAS_MORE=$(echo "$BODY" | jq -r '.config.has_more // false')
             
-            MYSQL_TOTAL=$(echo "$BODY" | jq -r '.overall.mysql_total // 0')
-            SUPABASE_SYNCED=$(echo "$BODY" | jq -r '.overall.supabase_synced // 0')
-            SUPABASE_CHUNKS=$(echo "$BODY" | jq -r '.overall.supabase_total_chunks // 0')
-            SYNC_RATE=$(echo "$BODY" | jq -r '.overall.sync_rate // 0')
-            REMAINING=$(echo "$BODY" | jq -r '.overall.remaining // 0')
-            
             echo "  처리: ${BATCH_PROCESSED}건"
             echo "  업로드: ${BATCH_UPSERTED}건"
-            echo "  전체 통계: MySQL ${MYSQL_TOTAL} | Supabase ${SUPABASE_SYNCED} (${SYNC_RATE}%)"
+            echo "  더 있음: ${HAS_MORE}"
             
             TOTAL_PROCESSED=$((TOTAL_PROCESSED + BATCH_PROCESSED))
             TOTAL_UPSERTED=$((TOTAL_UPSERTED + BATCH_UPSERTED))
             
-            OFFSET=$((OFFSET + BATCH_SIZE * 2))
+            # 다음 오프셋
+            OFFSET=$((OFFSET + BATCH_SIZE))
             
+            # ✅ 종료 조건: has_more가 false이거나 처리된 건수가 0
             if [ "$HAS_MORE" = "false" ] || [ "$BATCH_PROCESSED" = "0" ]; then
-              echo "✅ 워커 완료"
+              echo "✅ 전체 동기화 완료"
               break
             fi
             
-            sleep 1
+            # Rate limit 방지
+            sleep 2
           done
           
-          echo "processed=$TOTAL_PROCESSED" >> $GITHUB_OUTPUT
-          echo "upserted=$TOTAL_UPSERTED" >> $GITHUB_OUTPUT
-          echo "batch_count=$BATCH_COUNT" >> $GITHUB_OUTPUT
-      
-      - name: 📊 워커 결과 저장
-        id: results
-        run: |
-          echo "processed=${{ steps.sync_batches.outputs.processed }}" >> $GITHUB_OUTPUT
-          echo "upserted=${{ steps.sync_batches.outputs.upserted }}" >> $GITHUB_OUTPUT
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 최종 결과"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "총 배치: $BATCH_COUNT"
+          echo "총 처리: $TOTAL_PROCESSED건"
+          echo "총 업로드: $TOTAL_UPSERTED건"
           
-          echo "### 워커 #${{ matrix.worker_id }} 결과" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 동기화 결과" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---:|" >> $GITHUB_STEP_SUMMARY
-          echo "| 워커 ID | ${{ matrix.worker_id }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 배치 수 | ${{ steps.sync_batches.outputs.batch_count }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 처리 건수 | ${{ steps.sync_batches.outputs.processed }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 업로드 건수 | ${{ steps.sync_batches.outputs.upserted }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 배치 | ${BATCH_COUNT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 처리 | ${TOTAL_PROCESSED}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "| 총 업로드 | ${TOTAL_UPSERTED}건 |" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 📊 최종 통계 (Final Statistics)
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   finalize:
     name: 📊 최종 통계
     runs-on: ubuntu-latest
@@ -224,51 +182,24 @@ jobs:
     
     steps:
       - name: 📊 최종 통계 조회
-        id: final_stats
         run: |
-          echo "📊 최종 Supabase 통계 조회 중..."
-          
-          # ✅ URL 구성 수정
           STATS_URL="${{ env.CAFE24_SYNC_URL }}/api/rag/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
-          
           RESPONSE=$(curl -s "$STATS_URL")
           
-          echo "응답:"
           echo "$RESPONSE" | jq '.'
           
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
-          SUPABASE_CHUNKS=$(echo "$RESPONSE" | jq -r '.supabase_total_chunks // 0')
           SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
           REMAINING=$(echo "$RESPONSE" | jq -r '.remaining // 0')
           
-          echo "### 🌐 전체 동기화 현황" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 최종 동기화 현황" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---:|" >> $GITHUB_STEP_SUMMARY
-          echo "| MySQL 전체 레코드 | ${MYSQL_TOTAL}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Supabase 동기화 완료 | ${SUPABASE_SYNCED}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Supabase 전체 청크 | ${SUPABASE_CHUNKS}개 |" >> $GITHUB_STEP_SUMMARY
+          echo "| MySQL 전체 | ${MYSQL_TOTAL}건 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supabase 동기화 | ${SUPABASE_SYNCED}건 |" >> $GITHUB_STEP_SUMMARY
           echo "| **동기화율** | **${SYNC_RATE}%** |" >> $GITHUB_STEP_SUMMARY
           echo "| 남은 데이터 | ${REMAINING}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$REMAINING" -eq 0 ]; then
-            echo "## ✅ 동기화 완료" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "모든 데이터가 성공적으로 동기화되었습니다! 🎉" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "## 🔄 동기화 진행 중" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "다음 스케줄에서 계속 진행됩니다." >> $GITHUB_STEP_SUMMARY
-          fi
-      
-      - name: 📋 실행 정보
-        run: |
-          echo "### 📋 실행 정보" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
-          echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '100' }}건" >> $GITHUB_STEP_SUMMARY
-          echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
 
           
