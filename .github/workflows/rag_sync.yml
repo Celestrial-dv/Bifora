@@ -38,9 +38,6 @@ env:
   SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
 jobs:
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔍 사전 진단
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   preflight:
     name: 🔍 사전 진단
     runs-on: ubuntu-latest
@@ -92,12 +89,10 @@ jobs:
           echo "📊 Supabase 통계 조회 중..."
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
           
-          if [[ "$BASE_URL" == *"sync_webhook.php"* ]]; then
-            STATS_URL="${BASE_URL/sync_webhook.php/sync_stats.php}"
-          else
-            STATS_URL="${BASE_URL%/}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
-          fi
+          # ⚡ 수정: 토큰을 포함한 완전한 URL 구성
+          STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
           echo "🔗 통계 URL: $STATS_URL"
           
@@ -105,6 +100,13 @@ jobs:
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
+          
+          # 오류 체크
+          ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
+          if [ -n "$ERROR" ]; then
+            echo "❌ 통계 조회 실패: $ERROR"
+            exit 1
+          fi
           
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
@@ -128,15 +130,12 @@ jobs:
           echo "| **동기화율** | **${SYNC_RATE}%** |" >> $GITHUB_STEP_SUMMARY
           echo "| 남은 데이터 | ${REMAINING}건 |" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 🔄 병렬 동기화 (반복 처리 추가)
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   sync:
     name: 🔄 워커 ${{ matrix.worker_id }}
     runs-on: ubuntu-latest
     needs: preflight
     if: needs.preflight.outputs.can_proceed == 'true' && needs.preflight.outputs.remaining > 0
-    timeout-minutes: 360  # 6시간
+    timeout-minutes: 360
     
     strategy:
       max-parallel: 2
@@ -164,7 +163,6 @@ jobs:
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           
-          # 초기 오프셋 계산 (워커 ID * 배치 크기)
           OFFSET=$((WORKER_ID * BATCH_SIZE))
           
           TOTAL_PROCESSED=0
@@ -172,7 +170,6 @@ jobs:
           TOTAL_DUPLICATE_SKIPPED=0
           ITERATION=0
           
-          # ⚡ 반복 처리 루프
           while [ $ITERATION -lt $MAX_ITERATIONS ]; do
             ITERATION=$((ITERATION + 1))
             
@@ -182,7 +179,6 @@ jobs:
             echo "   오프셋: $OFFSET"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            # 동기화 요청 URL 구성
             if [[ "$BASE_URL" == *"?"* ]]; then
               REQUEST_URL="${BASE_URL}&batch=${BATCH_SIZE}&offset=${OFFSET}"
             else
@@ -191,7 +187,6 @@ jobs:
             
             echo "🔗 요청 URL: $REQUEST_URL"
             
-            # HTTP 요청
             RESPONSE=$(curl -s -w "\n%{http_code}" "$REQUEST_URL")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | sed '$d')
@@ -202,13 +197,11 @@ jobs:
               break
             fi
             
-            # JSON 파싱
             BATCH_PROCESSED=$(echo "$BODY" | jq -r '.batch.processed // 0')
             BATCH_UPSERTED=$(echo "$BODY" | jq -r '.batch.upserted // 0')
             BATCH_DUPLICATE=$(echo "$BODY" | jq -r '.batch.duplicate_skipped // 0')
             HAS_MORE=$(echo "$BODY" | jq -r '.config.has_more // false')
             
-            # 전체 통계
             MYSQL_TOTAL=$(echo "$BODY" | jq -r '.overall.mysql_total // 0')
             SUPABASE_SYNCED=$(echo "$BODY" | jq -r '.overall.supabase_synced // 0')
             SYNC_RATE=$(echo "$BODY" | jq -r '.overall.sync_rate // 0')
@@ -220,15 +213,12 @@ jobs:
             echo "  📊 전체: MySQL ${MYSQL_TOTAL} | Supabase ${SUPABASE_SYNCED} (${SYNC_RATE}%)"
             echo "  📉 남은 데이터: ${REMAINING}건"
             
-            # 누적 통계
             TOTAL_PROCESSED=$((TOTAL_PROCESSED + BATCH_PROCESSED))
             TOTAL_UPSERTED=$((TOTAL_UPSERTED + BATCH_UPSERTED))
             TOTAL_DUPLICATE_SKIPPED=$((TOTAL_DUPLICATE_SKIPPED + BATCH_DUPLICATE))
             
-            # 다음 배치 오프셋 계산 (워커 수 * 배치 크기만큼 건너뛰기)
             OFFSET=$((OFFSET + BATCH_SIZE * 2))
             
-            # ⚡ 종료 조건 확인
             if [ "$HAS_MORE" = "false" ]; then
               echo "✅ has_more=false 감지, 워커 종료"
               break
@@ -239,7 +229,6 @@ jobs:
               break
             fi
             
-            # Rate limit 방지
             sleep 3
           done
           
@@ -273,9 +262,6 @@ jobs:
           echo "| 총 업로드 건수 | ${{ steps.sync_batches.outputs.total_upserted }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 중복 건너뜀 | ${{ steps.sync_batches.outputs.total_duplicate }} |" >> $GITHUB_STEP_SUMMARY
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 📊 최종 통계
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   finalize:
     name: 📊 최종 통계
     runs-on: ubuntu-latest
@@ -289,12 +275,10 @@ jobs:
           echo "📊 최종 Supabase 통계 조회 중..."
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
           
-          if [[ "$BASE_URL" == *"sync_webhook.php"* ]]; then
-            STATS_URL="${BASE_URL/sync_webhook.php/sync_stats.php}"
-          else
-            STATS_URL="${BASE_URL%/}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
-          fi
+          # ⚡ 수정: 토큰을 포함한 완전한 URL 구성
+          STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
           
           echo "🔗 통계 URL: $STATS_URL"
           
@@ -337,7 +321,8 @@ jobs:
           echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '100' }}건" >> $GITHUB_STEP_SUMMARY
           echo "- **최대 반복**: ${{ github.event.inputs.max_iterations || '250' }}회" >> $GITHUB_STEP_SUMMARY
-          echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **완료 시간**: $(date -u '+%Y-%m-% %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          
 
           
           
