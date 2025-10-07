@@ -260,7 +260,7 @@ jobs:
           echo "| 총 업로드 건수 | ${{ steps.sync_batches.outputs.total_upserted }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 중복 건너뜀 | ${{ steps.sync_batches.outputs.total_duplicate }} |" >> $GITHUB_STEP_SUMMARY
 
-  finalize:
+finalize:
     name: 📊 최종 통계 & 자동 재동기화
     runs-on: ubuntu-latest
     needs: [preflight, sync]
@@ -287,6 +287,11 @@ jobs:
           SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
           REMAINING=$(echo "$RESPONSE" | jq -r '.remaining // 0')
           
+          echo "mysql_total=$MYSQL_TOTAL" >> $GITHUB_OUTPUT
+          echo "supabase_synced=$SUPABASE_SYNCED" >> $GITHUB_OUTPUT
+          echo "sync_rate=$SYNC_RATE" >> $GITHUB_OUTPUT
+          echo "remaining=$REMAINING" >> $GITHUB_OUTPUT
+          
           echo "### 🌐 전체 동기화 현황" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
@@ -311,29 +316,29 @@ jobs:
             echo "다음 스케줄에서 계속 진행됩니다." >> $GITHUB_STEP_SUMMARY
           fi
       
-    # ⚡ 추가된 부분
-    - name: 🔄 자동 재동기화 (100% 미달 시)
-      if: steps.final_stats.outputs.remaining > 0
-      run: |
-        echo "🔄 남은 데이터: ${{ steps.final_stats.outputs.remaining }}건"
-        echo "자동 재동기화를 시작합니다..."
-        
-        BASE_URL="${{ env.CAFE24_SYNC_URL }}"
-        BASE_DIR=$(dirname "$BASE_URL")
-        
-        AUTO_SYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_sync"
-        
-        RESPONSE=$(curl -s "$AUTO_SYNC_URL")
-        
-        echo "응답:"
-        echo "$RESPONSE" | jq '.'
-        
-        SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
-        MESSAGE=$(echo "$RESPONSE" | jq -r '.message // "Unknown"')
-        
-        if [ "$SUCCESS" = "true" ]; then
-          echo "✅ 자동 재동기화 성공: $MESSAGE"
-        else
-          echo "⚠️ 자동 재동기화 실패: $MESSAGE"
-        fi
-              
+      # ⚡ 자동 재동기화 step 추가
+      - name: 🔄 자동 재동기화 (100% 미달 시)
+        if: steps.final_stats.outputs.remaining > 0
+        run: |
+          echo "🔄 남은 데이터: ${{ steps.final_stats.outputs.remaining }}건"
+          echo "자동 재동기화를 시작합니다..."
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          
+          AUTO_SYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_sync"
+          
+          RESPONSE=$(curl -s "$AUTO_SYNC_URL")
+          
+          echo "응답:"
+          echo "$RESPONSE" | jq '.'
+          
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+          MESSAGE=$(echo "$RESPONSE" | jq -r '.message // "Unknown"')
+          
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ 자동 재동기화 성공: $MESSAGE"
+          else
+            echo "⚠️ 자동 재동기화 실패: $MESSAGE"
+          fi
+          
