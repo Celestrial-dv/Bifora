@@ -1,4 +1,4 @@
-name: RAG Knowledge Base Sync (Auto Resync)
+name: RAG Knowledge Base Sync (Manual Resync Control)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📌 최적화 설정 요약
@@ -8,6 +8,7 @@ name: RAG Knowledge Base Sync (Auto Resync)
 # ✅ 타임아웃: 180분 (충분한 처리 시간)
 # ✅ 대기 시간: 3초 (API 부하 분산)
 # ✅ 증분 동기화: skip-synced=1 (중복 방지)
+# ✅ 재동기화: 수동 실행 시에만 활성화 (세션 타임아웃 방지)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 on:
@@ -58,6 +59,15 @@ on:
         options:
           - 'false'
           - 'true'
+      # ✅ 신규 옵션: 재동기화 활성화
+      enable_resync:
+        description: '🔄 자동 재동기화 활성화 (권장: false)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
@@ -76,6 +86,7 @@ jobs:
       batch_size: ${{ steps.params.outputs.batch_size }}
       workers: ${{ steps.params.outputs.workers }}
       max_iterations: ${{ steps.params.outputs.max_iterations }}
+      enable_resync: ${{ steps.params.outputs.enable_resync }}
       
     steps:
       - name: ⚙️ 파라미터 설정
@@ -86,23 +97,27 @@ jobs:
             BATCH_SIZE=100
             WORKERS=2
             MAX_ITERATIONS=500
-            echo "📅 스케줄 실행: 기본값 사용"
+            ENABLE_RESYNC=false  # ✅ 스케줄 실행 시 재동기화 비활성화
+            echo "📅 스케줄 실행: 기본값 사용 (재동기화 비활성화)"
           else
             BATCH_SIZE="${{ github.event.inputs.batch_size || '100' }}"
             WORKERS="${{ github.event.inputs.workers || '2' }}"
             MAX_ITERATIONS="${{ github.event.inputs.max_iterations || '500' }}"
+            ENABLE_RESYNC="${{ github.event.inputs.enable_resync || 'false' }}"
             echo "🖱️ 수동 실행: 사용자 입력값 사용"
           fi
           
           echo "batch_size=$BATCH_SIZE" >> $GITHUB_OUTPUT
           echo "workers=$WORKERS" >> $GITHUB_OUTPUT
           echo "max_iterations=$MAX_ITERATIONS" >> $GITHUB_OUTPUT
+          echo "enable_resync=$ENABLE_RESYNC" >> $GITHUB_OUTPUT
           
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "⚙️ 실행 파라미터"
           echo "  - 배치 크기: ${BATCH_SIZE}"
           echo "  - 워커 수: ${WORKERS}"
           echo "  - 최대 반복: ${MAX_ITERATIONS}"
+          echo "  - 🔄 재동기화: ${ENABLE_RESYNC}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       
       - name: 🔐 토큰 검증
@@ -238,7 +253,7 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "🔄 워커 #${WORKER_ID} - 반복 ${ITERATION}/${MAX_ITERATIONS}"
             echo "  - 오프셋: ${OFFSET}"
-            echo "  - 배치 크기: ${BATCH_SIZE} ← ✅ 사용자 지정값"
+            echo "  - 배치 크기: ${BATCH_SIZE}"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
             # URL 구성
@@ -314,7 +329,12 @@ jobs:
     name: 🔄 자동 재동기화
     runs-on: ubuntu-latest
     needs: [preflight, sync]
-    if: always() && needs.preflight.outputs.can_proceed == 'true'
+    # ✅ 조건 추가: enable_resync=true이고 sync 완료 후에만 실행
+    if: |
+      always() && 
+      needs.preflight.outputs.can_proceed == 'true' && 
+      needs.preflight.outputs.enable_resync == 'true' &&
+      (needs.sync.result == 'success' || needs.sync.result == 'skipped')
     
     steps:
       - name: 📊 동기화 후 통계 확인
@@ -339,6 +359,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- 남은 데이터: ${REMAINING}건" >> $GITHUB_STEP_SUMMARY
           echo "- 동기화율: ${SYNC_RATE}%" >> $GITHUB_STEP_SUMMARY
+          echo "- 재동기화 활성화: ✅ ON" >> $GITHUB_STEP_SUMMARY
       
       - name: 🔄 자동 재동기화 실행
         # ✅ 조건 완화: 95% 이상 OR 남은 데이터 1000건 이하
@@ -375,6 +396,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- 트리거: ${RESYNC_TRIGGERED}" >> $GITHUB_STEP_SUMMARY
           echo "- 메시지: ${RESYNC_MESSAGE}" >> $GITHUB_STEP_SUMMARY
+      
+      - name: ℹ️ 재동기화 건너뜀
+        if: steps.check_remaining.outputs.remaining == 0
+        run: |
+          echo "### ℹ️ 재동기화 불필요" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "100% 동기화 완료로 재동기화를 건너뜁니다." >> $GITHUB_STEP_SUMMARY
 
   finalize:
     name: 📊 최종 통계
@@ -401,6 +429,13 @@ jobs:
           SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
           REMAINING=$(echo "$RESPONSE" | jq -r '.remaining // 0')
           
+          # 재동기화 상태 확인
+          RESYNC_ENABLED="${{ needs.preflight.outputs.enable_resync }}"
+          RESYNC_STATUS="❌ OFF (권장)"
+          if [ "$RESYNC_ENABLED" = "true" ]; then
+            RESYNC_STATUS="✅ ON"
+          fi
+          
           echo "### 🌐 전체 동기화 현황" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
@@ -412,9 +447,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ⚙️ 실행 파라미터" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **배치 크기**: ${{ needs.preflight.outputs.batch_size }}건 ← ✅ 사용자 지정" >> $GITHUB_STEP_SUMMARY
+          echo "- **배치 크기**: ${{ needs.preflight.outputs.batch_size }}건" >> $GITHUB_STEP_SUMMARY
           echo "- **워커 수**: ${{ needs.preflight.outputs.workers }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **최대 반복**: ${{ needs.preflight.outputs.max_iterations }}회" >> $GITHUB_STEP_SUMMARY
+          echo "- **🔄 자동 재동기화**: ${RESYNC_STATUS}" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
@@ -427,6 +463,13 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "다음 스케줄에서 계속 진행됩니다." >> $GITHUB_STEP_SUMMARY
           fi
-
           
+          # 재동기화 관련 안내
+          if [ "$RESYNC_ENABLED" = "false" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 💡 재동기화 안내" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "현재 자동 재동기화가 **비활성화** 상태입니다." >> $GITHUB_STEP_SUMMARY
+            echo "필요 시 수동 실행에서 '🔄 자동 재동기화 활성화' 옵션을 true로 설정하세요." >> $GITHUB_STEP_SUMMARY
+          fi
           
