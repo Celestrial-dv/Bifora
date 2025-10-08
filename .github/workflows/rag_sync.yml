@@ -21,22 +21,43 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: '배치 크기 (기본값: 50)'
+        description: '배치 크기 (기본값: 100)'
         required: false
-        default: '50'
+        default: '100'
+        type: choice
+        options:
+          - '50'
+          - '100'
+          - '150'
+          - '200'
       workers:
         description: '워커 수 (기본값: 2)'
         required: false
         default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
       max_iterations:
         description: '워커당 최대 반복 횟수 (기본값: 500)'
         required: false
         default: '500'
-      # 🆕 첫 실행 여부 옵션 추가
+        type: choice
+        options:
+          - '100'
+          - '200'
+          - '500'
+          - '1000'
       first_run:
-        description: '첫 실행 여부 (기본값: false)'
+        description: '첫 실행 여부 (Supabase 비어있을 때만 true)'
         required: false
         default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   CAFE24_SYNC_URL: ${{ secrets.CAFE24_SYNC_URL }}
@@ -52,8 +73,38 @@ jobs:
       supabase_synced: ${{ steps.stats.outputs.supabase_synced }}
       remaining: ${{ steps.stats.outputs.remaining }}
       is_first_run: ${{ steps.stats.outputs.is_first_run }}
+      batch_size: ${{ steps.params.outputs.batch_size }}
+      workers: ${{ steps.params.outputs.workers }}
+      max_iterations: ${{ steps.params.outputs.max_iterations }}
       
     steps:
+      - name: ⚙️ 파라미터 설정
+        id: params
+        run: |
+          # 스케줄 실행 vs 수동 실행 구분
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            BATCH_SIZE=100
+            WORKERS=2
+            MAX_ITERATIONS=500
+            echo "📅 스케줄 실행: 기본값 사용"
+          else
+            BATCH_SIZE="${{ github.event.inputs.batch_size || '100' }}"
+            WORKERS="${{ github.event.inputs.workers || '2' }}"
+            MAX_ITERATIONS="${{ github.event.inputs.max_iterations || '500' }}"
+            echo "🖱️ 수동 실행: 사용자 입력값 사용"
+          fi
+          
+          echo "batch_size=$BATCH_SIZE" >> $GITHUB_OUTPUT
+          echo "workers=$WORKERS" >> $GITHUB_OUTPUT
+          echo "max_iterations=$MAX_ITERATIONS" >> $GITHUB_OUTPUT
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⚙️ 실행 파라미터"
+          echo "  - 배치 크기: ${BATCH_SIZE}"
+          echo "  - 워커 수: ${WORKERS}"
+          echo "  - 최대 반복: ${MAX_ITERATIONS}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      
       - name: 🔐 토큰 검증
         id: check
         run: |
@@ -83,7 +134,6 @@ jobs:
           fi
           
           echo "✅ 토큰 검증 성공"
-          echo "$BODY" | jq '.'
           echo "can_proceed=true" >> $GITHUB_OUTPUT
       
       - name: 📊 현재 통계 조회
@@ -99,9 +149,6 @@ jobs:
           
           RESPONSE=$(curl -s "$STATS_URL")
           
-          echo "응답:"
-          echo "$RESPONSE" | jq '.'
-          
           ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
           if [ -n "$ERROR" ]; then
             echo "❌ 통계 조회 실패: $ERROR"
@@ -113,11 +160,11 @@ jobs:
           SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
           REMAINING=$(echo "$RESPONSE" | jq -r '.remaining // 0')
           
-          # 🆕 첫 실행 여부 판단 (Supabase에 데이터가 없으면 첫 실행)
-          IS_FIRST_RUN="false"
+          # 첫 실행 여부 판단
+          IS_FIRST_RUN="${{ github.event.inputs.first_run || 'false' }}"
           if [ "$SUPABASE_SYNCED" -eq 0 ] && [ "$MYSQL_TOTAL" -gt 0 ]; then
             IS_FIRST_RUN="true"
-            echo "🆕 첫 실행 감지: Supabase에 데이터가 없습니다."
+            echo "🆕 첫 실행 자동 감지"
           fi
           
           echo "mysql_total=$MYSQL_TOTAL" >> $GITHUB_OUTPUT
@@ -134,7 +181,7 @@ jobs:
           echo "| Supabase 동기화 | ${SUPABASE_SYNCED}건 |" >> $GITHUB_STEP_SUMMARY
           echo "| **동기화율** | **${SYNC_RATE}%** |" >> $GITHUB_STEP_SUMMARY
           echo "| 남은 데이터 | ${REMAINING}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **첫 실행** | **${IS_FIRST_RUN}** |" >> $GITHUB_STEP_SUMMARY
+          echo "| 첫 실행 | ${IS_FIRST_RUN} |" >> $GITHUB_STEP_SUMMARY
 
   sync:
     name: 🔄 워커 ${{ matrix.worker_id }}
@@ -144,40 +191,44 @@ jobs:
     timeout-minutes: 480
     
     strategy:
-      max-parallel: 2
+      max-parallel: ${{ fromJSON(needs.preflight.outputs.workers) }}
       matrix:
-        worker_id: [0, 1]
+        worker_id: [0, 1, 2, 3]
     
     steps:
       - name: 🚀 반복 배치 동기화 실행
+        if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
         id: sync_batches
         env:
-          BATCH_SIZE: ${{ github.event.inputs.batch_size || '50' }}
+          BATCH_SIZE: ${{ needs.preflight.outputs.batch_size }}
           WORKER_ID: ${{ matrix.worker_id }}
-          MAX_ITERATIONS: ${{ github.event.inputs.max_iterations || '500' }}
+          MAX_ITERATIONS: ${{ needs.preflight.outputs.max_iterations }}
           IS_FIRST_RUN: ${{ needs.preflight.outputs.is_first_run }}
+          WORKERS: ${{ needs.preflight.outputs.workers }}
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🚀 워커 #${WORKER_ID} 시작"
           echo "  - 배치 크기: ${BATCH_SIZE}"
           echo "  - 최대 반복: ${MAX_ITERATIONS}"
           echo "  - 첫 실행: ${IS_FIRST_RUN}"
+          echo "  - 전체 워커: ${WORKERS}개"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           SYNC_TOKEN="${{ env.SYNC_TOKEN }}"
           
-          # 🆕 첫 실행이면 skip-synced=0, 아니면 skip-synced=1
+          # 첫 실행이면 skip-synced=0
           if [ "$IS_FIRST_RUN" = "true" ]; then
             SKIP_SYNCED=0
-            echo "📌 첫 실행: 중복 체크 비활성화 (skip-synced=0)"
+            echo "📌 첫 실행: 중복 체크 비활성화"
           else
             SKIP_SYNCED=1
-            echo "📌 재실행: 중복 체크 활성화 (skip-synced=1)"
+            echo "📌 재실행: 중복 체크 활성화"
           fi
           
           ITERATION=0
           TOTAL_PROCESSED=0
+          TOTAL_UPSERTED=0
           OFFSET=$((WORKER_ID * BATCH_SIZE))
           
           while [ $ITERATION -lt $MAX_ITERATIONS ]; do
@@ -187,8 +238,7 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "🔄 워커 #${WORKER_ID} - 반복 ${ITERATION}/${MAX_ITERATIONS}"
             echo "  - 오프셋: ${OFFSET}"
-            echo "  - 배치 크기: ${BATCH_SIZE}"
-            echo "  - 중복 건너뛰기: ${SKIP_SYNCED}"
+            echo "  - 배치 크기: ${BATCH_SIZE} ← ✅ 사용자 지정값"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
             # URL 구성
@@ -198,29 +248,28 @@ jobs:
               SYNC_URL="${BASE_URL}?t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
             fi
             
-            echo "🔗 요청 URL: ${SYNC_URL%\?t=*}?t=***&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
+            echo "🔗 요청 URL: ...?t=***&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
             
             # HTTP 요청
             RESPONSE=$(curl -s -w "\n%{http_code}" "$SYNC_URL")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
             BODY=$(echo "$RESPONSE" | sed '$d')
             
-            echo "📊 HTTP 응답 코드: ${HTTP_CODE}"
+            echo "📊 HTTP 응답: ${HTTP_CODE}"
             
             if [ "$HTTP_CODE" != "200" ]; then
               echo "❌ HTTP 오류: ${HTTP_CODE}"
-              echo "$BODY" | jq '.' || echo "$BODY"
-              echo "⏸️ 5초 후 재시도..."
-              sleep 5
+              echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY" | head -c 500
+              echo "⏸️ 10초 후 재시도..."
+              sleep 10
               continue
             fi
             
             # JSON 파싱
             echo "$BODY" | jq '.' > /dev/null 2>&1
             if [ $? -ne 0 ]; then
-              echo "⚠️ JSON 파싱 실패, 원본 응답:"
+              echo "⚠️ JSON 파싱 실패"
               echo "$BODY" | head -c 500
-              echo "⏸️ 5초 후 재시도..."
               sleep 5
               continue
             fi
@@ -229,14 +278,17 @@ jobs:
             OK=$(echo "$BODY" | jq -r '.ok // false')
             PROCESSED=$(echo "$BODY" | jq -r '.batch.processed // 0')
             UPSERTED=$(echo "$BODY" | jq -r '.batch.upserted // 0')
+            DUPLICATE=$(echo "$BODY" | jq -r '.batch.duplicate_skipped // 0')
             HAS_MORE=$(echo "$BODY" | jq -r '.config.has_more // false')
             
             echo "✅ 처리 완료:"
             echo "  - 처리: ${PROCESSED}건"
             echo "  - 업로드: ${UPSERTED}건"
+            echo "  - 중복: ${DUPLICATE}건"
             echo "  - 추가 데이터: ${HAS_MORE}"
             
             TOTAL_PROCESSED=$((TOTAL_PROCESSED + PROCESSED))
+            TOTAL_UPSERTED=$((TOTAL_UPSERTED + UPSERTED))
             
             # 종료 조건
             if [ "$PROCESSED" -eq 0 ] || [ "$HAS_MORE" = "false" ]; then
@@ -244,10 +296,10 @@ jobs:
               break
             fi
             
-            # 다음 오프셋 계산 (워커 수만큼 증가)
-            OFFSET=$((OFFSET + BATCH_SIZE * 2))
+            # 다음 오프셋 (워커 수만큼 점프)
+            OFFSET=$((OFFSET + BATCH_SIZE * WORKERS))
             
-            # 대기 시간 (API 부하 분산)
+            # API 부하 분산
             sleep 3
           done
           
@@ -255,9 +307,9 @@ jobs:
           echo "✅ 워커 #${WORKER_ID} 완료"
           echo "  - 총 반복: ${ITERATION}회"
           echo "  - 총 처리: ${TOTAL_PROCESSED}건"
+          echo "  - 총 업로드: ${TOTAL_UPSERTED}건"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  # ⚡ 신규: 재동기화 자동 실행
   auto_resync:
     name: 🔄 자동 재동기화
     runs-on: ubuntu-latest
@@ -289,11 +341,12 @@ jobs:
           echo "- 동기화율: ${SYNC_RATE}%" >> $GITHUB_STEP_SUMMARY
       
       - name: 🔄 자동 재동기화 실행
-        if: steps.check_remaining.outputs.remaining > 0 && steps.check_remaining.outputs.remaining <= 500
+        if: steps.check_remaining.outputs.remaining > 0 && steps.check_remaining.outputs.sync_rate >= 99
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔄 자동 재동기화 시작"
           echo "  - 남은 데이터: ${{ steps.check_remaining.outputs.remaining }}건"
+          echo "  - 동기화율: ${{ steps.check_remaining.outputs.sync_rate }}%"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
@@ -326,9 +379,6 @@ jobs:
           
           RESPONSE=$(curl -s "$STATS_URL")
           
-          echo "응답:"
-          echo "$RESPONSE" | jq '.'
-          
           MYSQL_TOTAL=$(echo "$RESPONSE" | jq -r '.mysql_total // 0')
           SUPABASE_SYNCED=$(echo "$RESPONSE" | jq -r '.supabase_synced // 0')
           SYNC_RATE=$(echo "$RESPONSE" | jq -r '.sync_rate // 0')
@@ -342,9 +392,12 @@ jobs:
           echo "| Supabase 동기화 완료 | ${SUPABASE_SYNCED}건 |" >> $GITHUB_STEP_SUMMARY
           echo "| **동기화율** | **${SYNC_RATE}%** |" >> $GITHUB_STEP_SUMMARY
           echo "| 남은 데이터 | ${REMAINING}건 |" >> $GITHUB_STEP_SUMMARY
-          echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
-          echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '50' }}건" >> $GITHUB_STEP_SUMMARY
-          echo "- **최대 반복**: ${{ github.event.inputs.max_iterations || '500' }}회" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚙️ 실행 파라미터" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **배치 크기**: ${{ needs.preflight.outputs.batch_size }}건 ← ✅ 사용자 지정" >> $GITHUB_STEP_SUMMARY
+          echo "- **워커 수**: ${{ needs.preflight.outputs.workers }}개" >> $GITHUB_STEP_SUMMARY
+          echo "- **최대 반복**: ${{ needs.preflight.outputs.max_iterations }}회" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
@@ -357,16 +410,6 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "다음 스케줄에서 계속 진행됩니다." >> $GITHUB_STEP_SUMMARY
           fi
-      
-      - name: 📋 실행 정보
-        run: |
-          echo "### 📋 실행 정보" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **워커 수**: ${{ github.event.inputs.workers || '2' }}개" >> $GITHUB_STEP_SUMMARY
-          echo "- **배치 크기**: ${{ github.event.inputs.batch_size || '50' }}건" >> $GITHUB_STEP_SUMMARY
-          echo "- **최대 반복**: ${{ github.event.inputs.max_iterations || '500' }}회" >> $GITHUB_STEP_SUMMARY
-          echo "- **자동 재동기화**: 활성화 (임계값: 500건)" >> $GITHUB_STEP_SUMMARY
-          echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
 
           
           
