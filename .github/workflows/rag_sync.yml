@@ -341,12 +341,21 @@ jobs:
           echo "- 동기화율: ${SYNC_RATE}%" >> $GITHUB_STEP_SUMMARY
       
       - name: 🔄 자동 재동기화 실행
-        if: steps.check_remaining.outputs.remaining > 0 && steps.check_remaining.outputs.sync_rate >= 99
+        # ✅ 조건 완화: 95% 이상 OR 남은 데이터 1000건 이하
+        if: |
+          steps.check_remaining.outputs.remaining > 0 && (
+            steps.check_remaining.outputs.sync_rate >= 95 ||
+            steps.check_remaining.outputs.remaining <= 1000
+          )
         run: |
+          REMAINING=${{ steps.check_remaining.outputs.remaining }}
+          SYNC_RATE=${{ steps.check_remaining.outputs.sync_rate }}
+          
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔄 자동 재동기화 시작"
-          echo "  - 남은 데이터: ${{ steps.check_remaining.outputs.remaining }}건"
-          echo "  - 동기화율: ${{ steps.check_remaining.outputs.sync_rate }}%"
+          echo "  - 남은 데이터: ${REMAINING}건"
+          echo "  - 동기화율: ${SYNC_RATE}%"
+          echo "  - 트리거 조건: 95% 이상 OR 1000건 이하"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
@@ -358,6 +367,14 @@ jobs:
           
           echo "응답:"
           echo "$RESPONSE" | jq '.'
+          
+          RESYNC_TRIGGERED=$(echo "$RESPONSE" | jq -r '.resync.triggered // false')
+          RESYNC_MESSAGE=$(echo "$RESPONSE" | jq -r '.resync.message // ""')
+          
+          echo "### 🔄 재동기화 결과" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 트리거: ${RESYNC_TRIGGERED}" >> $GITHUB_STEP_SUMMARY
+          echo "- 메시지: ${RESYNC_MESSAGE}" >> $GITHUB_STEP_SUMMARY
 
   finalize:
     name: 📊 최종 통계
