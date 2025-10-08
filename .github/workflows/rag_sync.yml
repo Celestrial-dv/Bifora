@@ -177,11 +177,12 @@ jobs:
           echo "- 동기화율: ${SYNC_RATE}%" >> $GITHUB_STEP_SUMMARY
       
       - name: 🔄 자동 재동기화 실행
-        if: steps.check_remaining.outputs.remaining > 0 && steps.check_remaining.outputs.remaining <= 500
+        if: steps.check_remaining.outputs.remaining > 0  # ✅ 남은 데이터만 체크
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔄 자동 재동기화 시작"
           echo "  - 남은 데이터: ${{ steps.check_remaining.outputs.remaining }}건"
+          echo "  - 동기화율: ${{ steps.check_remaining.outputs.sync_rate }}%"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
