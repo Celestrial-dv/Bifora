@@ -59,7 +59,6 @@ on:
         options:
           - 'false'
           - 'true'
-      # ✅ 신규 옵션: 재동기화 활성화
       enable_resync:
         description: '🔄 자동 재동기화 활성화 (권장: false)'
         required: false
@@ -97,7 +96,7 @@ jobs:
             BATCH_SIZE=100
             WORKERS=2
             MAX_ITERATIONS=500
-            ENABLE_RESYNC=false  # ✅ 스케줄 실행 시 재동기화 비활성화
+            ENABLE_RESYNC=false
             echo "📅 스케줄 실행: 기본값 사용 (재동기화 비활성화)"
           else
             BATCH_SIZE="${{ github.event.inputs.batch_size || '100' }}"
@@ -211,6 +210,31 @@ jobs:
         worker_id: [0, 1, 2, 3]
     
     steps:
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # ✅ [v4.3 추가] 세션 시작 로그
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      - name: 📝 세션 시작 로그
+        if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
+        run: |
+          SESSION_ID="gh_${{ github.run_id }}_worker_${{ matrix.worker_id }}"
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          
+          LOG_URL="${BASE_DIR}/logs_supabase_writer.php"
+          
+          echo "📝 세션 로그 생성: ${SESSION_ID}"
+          
+          RESPONSE=$(curl -s "${LOG_URL}?action=start&session_id=${SESSION_ID}")
+          
+          echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
+          
+          # 환경변수로 세션 ID 저장
+          echo "SESSION_ID=${SESSION_ID}" >> $GITHUB_ENV
+      
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # ✅ 기존 동기화 로직 (수정 없음)
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 🚀 반복 배치 동기화 실행
         if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
         id: sync_batches
@@ -324,12 +348,93 @@ jobs:
           echo "  - 총 처리: ${TOTAL_PROCESSED}건"
           echo "  - 총 업로드: ${TOTAL_UPSERTED}건"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # 환경변수로 통계 저장
+          echo "TOTAL_PROCESSED=${TOTAL_PROCESSED}" >> $GITHUB_ENV
+          echo "TOTAL_UPSERTED=${TOTAL_UPSERTED}" >> $GITHUB_ENV
+          echo "BATCH_COUNT=${ITERATION}" >> $GITHUB_ENV
+      
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # ✅ [v4.3 추가] 배치 결과 로그 업데이트
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      - name: 📝 배치 결과 로그 업데이트
+        if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers) && success()
+        run: |
+          SESSION_ID="${{ env.SESSION_ID }}"
+          TOTAL_UPSERTED="${{ env.TOTAL_UPSERTED }}"
+          BATCH_COUNT="${{ env.BATCH_COUNT }}"
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          
+          echo "📊 최종 통계 조회 중..."
+          
+          # 통계 조회
+          STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
+          STATS=$(curl -s "$STATS_URL")
+          
+          SQL_TOTAL=$(echo "$STATS" | jq -r '.mysql_total // 0')
+          SUPABASE_SYNCED=$(echo "$STATS" | jq -r '.supabase_synced // 0')
+          SYNC_RATE=$(echo "$STATS" | jq -r '.sync_rate // 0')
+          REMAINING=$(echo "$STATS" | jq -r '.remaining // 0')
+          
+          echo "  - MySQL 전체: ${SQL_TOTAL}"
+          echo "  - Supabase 동기화: ${SUPABASE_SYNCED}"
+          echo "  - 동기화율: ${SYNC_RATE}%"
+          echo "  - 남은 데이터: ${REMAINING}"
+          
+          # 로그 업데이트
+          LOG_URL="${BASE_DIR}/logs_supabase_writer.php"
+          
+          UPDATE_URL="${LOG_URL}?action=update&session_id=${SESSION_ID}&sql_total=${SQL_TOTAL}&supabase_synced=${SUPABASE_SYNCED}&sync_rate=${SYNC_RATE}&remaining=${REMAINING}&batch_processed=${BATCH_COUNT}&total_upserted=${TOTAL_UPSERTED}"
+          
+          echo "📝 로그 업데이트..."
+          
+          RESPONSE=$(curl -s "$UPDATE_URL")
+          
+          echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
+      
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # ✅ [v4.3 추가] 세션 완료 로그
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      - name: 📝 세션 완료 로그
+        if: always() && matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
+        run: |
+          SESSION_ID="${{ env.SESSION_ID }}"
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          
+          LOG_URL="${BASE_DIR}/logs_supabase_writer.php"
+          
+          # 작업 상태 확인
+          if [ "${{ steps.sync_batches.outcome }}" = "success" ]; then
+            STATUS="SUCCESS"
+            ERROR_MSG=""
+            echo "✅ 워커 성공"
+          else
+            STATUS="FAILED"
+            ERROR_MSG="Worker failed: ${{ steps.sync_batches.outcome }}"
+            echo "❌ 워커 실패: ${{ steps.sync_batches.outcome }}"
+          fi
+          
+          # 로그 완료
+          FINISH_URL="${LOG_URL}?action=finish&session_id=${SESSION_ID}&status=${STATUS}"
+          
+          if [ -n "$ERROR_MSG" ]; then
+            FINISH_URL="${FINISH_URL}&error=${ERROR_MSG}"
+          fi
+          
+          echo "📝 세션 완료 기록..."
+          
+          RESPONSE=$(curl -s "$FINISH_URL")
+          
+          echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
 
   auto_resync:
     name: 🔄 자동 재동기화
     runs-on: ubuntu-latest
     needs: [preflight, sync]
-    # ✅ 조건 추가: enable_resync=true이고 sync 완료 후에만 실행
     if: |
       always() && 
       needs.preflight.outputs.can_proceed == 'true' && 
@@ -362,7 +467,6 @@ jobs:
           echo "- 재동기화 활성화: ✅ ON" >> $GITHUB_STEP_SUMMARY
       
       - name: 🔄 자동 재동기화 실행
-        # ✅ 조건 완화: 95% 이상 OR 남은 데이터 1000건 이하
         if: |
           steps.check_remaining.outputs.remaining > 0 && (
             steps.check_remaining.outputs.sync_rate >= 95 ||
@@ -451,6 +555,7 @@ jobs:
           echo "- **워커 수**: ${{ needs.preflight.outputs.workers }}개" >> $GITHUB_STEP_SUMMARY
           echo "- **최대 반복**: ${{ needs.preflight.outputs.max_iterations }}회" >> $GITHUB_STEP_SUMMARY
           echo "- **🔄 자동 재동기화**: ${RESYNC_STATUS}" >> $GITHUB_STEP_SUMMARY
+          echo "- **📝 로그 수집**: ✅ 활성화 (Cafe24 DB)" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
@@ -471,5 +576,27 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "현재 자동 재동기화가 **비활성화** 상태입니다." >> $GITHUB_STEP_SUMMARY
             echo "필요 시 수동 실행에서 '🔄 자동 재동기화 활성화' 옵션을 true로 설정하세요." >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      # ✅ [v4.3 추가] 미완료 로그 자동 정리
+      # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      - name: 🧹 미완료 로그 정리
+        run: |
+          echo "🧹 1분 이상 RUNNING 상태인 로그 정리 중..."
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          
+          CLEANUP_URL="${BASE_DIR}/logs_supabase_api.php?action=cleanup&timeout=1"
+          
+          RESPONSE=$(curl -s "$CLEANUP_URL")
+          
+          CLEANED=$(echo "$RESPONSE" | jq -r '.cleaned // 0')
+          
+          if [ "$CLEANED" -gt 0 ]; then
+            echo "✅ ${CLEANED}개 로그 정리 완료"
+          else
+            echo "ℹ️ 정리할 로그 없음"
           fi
           
