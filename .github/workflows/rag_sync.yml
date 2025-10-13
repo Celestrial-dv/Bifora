@@ -325,6 +325,76 @@ jobs:
           echo "  - 총 업로드: ${TOTAL_UPSERTED}건"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # ================== [핵심 수정] 재동기화 작업 로직 변경 ==================
+  auto_resync:
+    name: 🔄 자동 재동기화 (반복 실행)
+    runs-on: ubuntu-latest
+    needs: [preflight, sync]
+    if: |
+      always() && 
+      needs.preflight.outputs.can_proceed == 'true' && 
+      needs.preflight.outputs.enable_resync == 'true' &&
+      (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+    
+    steps:
+      - name: 🔄 반복 재동기화 실행
+        env:
+          MAX_RESYNC_ITERATIONS: 10 # 무한 루프 방지를 위한 최대 반복 횟수
+        run: |
+          echo "### 🔄 재동기화 프로세스 시작" >> $GITHUB_STEP_SUMMARY
+          
+          BASE_URL="${{ env.CAFE24_SYNC_URL }}"
+          BASE_DIR=$(dirname "$BASE_URL")
+          STATS_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}"
+          RESYNC_URL="${STATS_URL}&action=auto_resync"
+          
+          ITERATION=0
+          while [ $ITERATION -lt $MAX_RESYNC_ITERATIONS ]; do
+            ITERATION=$((ITERATION + 1))
+            
+            echo ""
+            echo "---"
+            echo "🔄 재동기화 반복 #${ITERATION}/${MAX_RESYNC_ITERATIONS}"
+            
+            # 1. 현재 상태 확인
+            echo "📊 현재 통계 조회 중..."
+            STATS_RESPONSE=$(curl -s "$STATS_URL")
+            REMAINING=$(echo "$STATS_RESPONSE" | jq -r '.remaining // -1')
+            SYNC_RATE=$(echo "$STATS_RESPONSE" | jq -r '.sync_rate // 0')
+            
+            echo "  - 남은 데이터: ${REMAINING}건"
+            echo "  - 동기화율: ${SYNC_RATE}%"
+            
+            if [ "$REMAINING" -eq 0 ]; then
+              echo "🎉 100% 동기화 완료! 재동기화를 종료합니다."
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**✅ 재동기화 성공**" >> $GITHUB_STEP_SUMMARY
+              echo "> 모든 남은 데이터가 성공적으로 동기화되었습니다." >> $GITHUB_STEP_SUMMARY
+              break
+            elif [ "$REMAINING" -lt 0 ]; then
+              echo "❌ 통계 조회 실패. 재동기화를 중단합니다."
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**⚠️ 재동기화 오류**" >> $GITHUB_STEP_SUMMARY
+              echo "> 통계 조회에 실패하여 프로세스를 중단했습니다." >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+            
+            # 2. 재동기화 트리거
+            echo "🚀 재동기화 트리거 요청..."
+            RESYNC_RESPONSE=$(curl -s "$RESYNC_URL")
+            echo "$RESYNC_RESPONSE" | jq '.'
+            
+            # 3. 다음 배치가 처리될 때까지 대기 (60초)
+            echo "⏳ 다음 배치가 처리될 때까지 60초 대기..."
+            sleep 60
+          done
+          
+          if [ $ITERATION -ge $MAX_RESYNC_ITERATIONS ]; then
+            echo "⚠️ 최대 반복 횟수 도달. 워크플로우를 종료합니다."
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**⚠️ 재동기화 시간 초과**" >> $GITHUB_STEP_SUMMARY
+            echo "> 최대 반복 횟수에 도달하여 프로세스를 종료했습니다. 남은 데이터는 다음 스케줄에 처리됩니다." >> $GITHUB_STEP_SUMMARY
+          fi
   # =======================================================================
 
   finalize:
@@ -399,5 +469,4 @@ jobs:
             echo "현재 자동 재동기화가 **비활성화** 상태입니다." >> $GITHUB_STEP_SUMMARY
             echo "필요 시 수동 실행에서 '🔄 자동 재동기화 활성화' 옵션을 true로 설정하세요." >> $GITHUB_STEP_SUMMARY
           fi
-
           
