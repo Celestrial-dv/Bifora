@@ -1,6 +1,6 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 파일명: rag_sync.yml
-# 버전: v4.4
+# 버전: v4.5
 # 위치: .github/workflows/rag_sync.yml
 # 목적: GitHub Actions → Cafe24 MySQL → Supabase RAG 지식베이스 동기화
 # 
