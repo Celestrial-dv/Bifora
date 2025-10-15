@@ -1,3 +1,20 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 파일명: rag_sync.yml
+# 버전: v4.4
+# 위치: .github/workflows/rag_sync.yml
+# 목적: GitHub Actions → Cafe24 MySQL → Supabase RAG 지식베이스 동기화
+# 
+# ✅ v4.4 변경사항 (2025-10-15):
+# - [수정] SYNC_URL에 &source=github 파라미터 추가 (108-112번째 줄)
+# - [해결] session_id가 'Webhook_Test' 대신 'GitHub_Cron_job'으로 정상 저장
+# - [연관] sync_webhook.php v2.7의 source 파라미터와 연동
+# 
+# ✅ v4.3 변경사항:
+# - [추가] 세션 시작/업데이트/완료 로그 자동 기록
+# - [추가] 미완료 로그 자동 정리 (1분 이상 RUNNING 상태)
+# - [추가] Cafe24 DB logs_supabase 테이블 연동
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 name: RAG Knowledge Base Sync (Manual Resync Control)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -9,6 +26,7 @@ name: RAG Knowledge Base Sync (Manual Resync Control)
 # ✅ 대기 시간: 3초 (API 부하 분산)
 # ✅ 증분 동기화: skip-synced=1 (중복 방지)
 # ✅ 재동기화: 수동 실행 시에만 활성화 (세션 타임아웃 방지)
+# ✅ source: github (session_id = 'GitHub_Cron_job')
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 on:
@@ -211,7 +229,7 @@ jobs:
     
     steps:
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      # ✅ [v4.3 추가] 세션 시작 로그
+      # ✅ [v4.3] 세션 시작 로그
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 📝 세션 시작 로그
         if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
@@ -233,7 +251,7 @@ jobs:
           echo "SESSION_ID=${SESSION_ID}" >> $GITHUB_ENV
       
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      # ✅ 기존 동기화 로직 (수정 없음)
+      # ✅ [v4.4] source=github 파라미터 추가 (108-112번째 줄)
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 🚀 반복 배치 동기화 실행
         if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
@@ -280,14 +298,14 @@ jobs:
             echo "  - 배치 크기: ${BATCH_SIZE}"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            # URL 구성
+            # ⭐ v4.4: URL 구성 시 source=github 파라미터 추가
             if [[ "$BASE_URL" == *"?"* ]]; then
-              SYNC_URL="${BASE_URL}&t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
+              SYNC_URL="${BASE_URL}&t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}&source=github"
             else
-              SYNC_URL="${BASE_URL}?t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
+              SYNC_URL="${BASE_URL}?t=${SYNC_TOKEN}&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}&source=github"
             fi
             
-            echo "🔗 요청 URL: ...?t=***&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}"
+            echo "🔗 요청 URL: ...?t=***&batch=${BATCH_SIZE}&offset=${OFFSET}&skip-synced=${SKIP_SYNCED}&source=github"
             
             # HTTP 요청
             RESPONSE=$(curl -s -w "\n%{http_code}" "$SYNC_URL")
@@ -355,7 +373,7 @@ jobs:
           echo "BATCH_COUNT=${ITERATION}" >> $GITHUB_ENV
       
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      # ✅ [v4.3 추가] 배치 결과 로그 업데이트
+      # ✅ [v4.3] 배치 결과 로그 업데이트
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 📝 배치 결과 로그 업데이트
         if: matrix.worker_id < fromJSON(needs.preflight.outputs.workers) && success()
@@ -395,7 +413,7 @@ jobs:
           echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
       
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      # ✅ [v4.3 추가] 세션 완료 로그
+      # ✅ [v4.3] 세션 완료 로그
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 📝 세션 완료 로그
         if: always() && matrix.worker_id < fromJSON(needs.preflight.outputs.workers)
@@ -556,6 +574,7 @@ jobs:
           echo "- **최대 반복**: ${{ needs.preflight.outputs.max_iterations }}회" >> $GITHUB_STEP_SUMMARY
           echo "- **🔄 자동 재동기화**: ${RESYNC_STATUS}" >> $GITHUB_STEP_SUMMARY
           echo "- **📝 로그 수집**: ✅ 활성화 (Cafe24 DB)" >> $GITHUB_STEP_SUMMARY
+          echo "- **✅ source 파라미터**: github (v4.4)" >> $GITHUB_STEP_SUMMARY
           echo "- **완료 시간**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
@@ -579,7 +598,7 @@ jobs:
           fi
       
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      # ✅ [v4.3 추가] 미완료 로그 자동 정리
+      # ✅ [v4.3] 미완료 로그 자동 정리
       # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
       - name: 🧹 미완료 로그 정리
         run: |
@@ -599,4 +618,3 @@ jobs:
           else
             echo "ℹ️ 정리할 로그 없음"
           fi
-          
