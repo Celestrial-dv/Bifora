@@ -1,14 +1,18 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 파일명: rag_sync.yml
-# 버전: v4.5
+# 버전: v4.6
 # 위치: .github/workflows/rag_sync.yml
 # 목적: GitHub Actions → Cafe24 MySQL → Supabase RAG 지식베이스 동기화
 # 
+# ✅ v4.6 변경사항 (2025-10-21):
+# - [수정] 자동 재동기화 조건 
+#   - 📝 스케줄 실행 시 동기화율이 100%가 아니면 자동으로 auto_resync 실행
+# 
 # ✅ v4.5 변경사항 (2025-10-15):
 # - [제거] 모든 logs_supabase_writer.php 직접 호출 단계 제거
-#   - 📝 세션 시작 로그 (제거)
-#   - 📝 배치 결과 로그 업데이트 (제거)
-#   - 📝 세션 완료 로그 (제거)
+#   - 세션 시작 로그 (제거)
+#   - 배치 결과 로그 업데이트 (제거)
+#   - 세션 완료 로그 (제거)
 # - [이유] sync_webhook.php에서만 로그 관리하여 중복 방지
 # - [결과] GitHub Actions 실행 시 'GitHub_Cron_job' 1개만 생성
 #
@@ -360,8 +364,11 @@ jobs:
     if: |
       always() && 
       needs.preflight.outputs.can_proceed == 'true' && 
-      needs.preflight.outputs.enable_resync == 'true' &&
-      (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+      (needs.sync.result == 'success' || needs.sync.result == 'skipped') &&
+      (
+       needs.preflight.outputs.enable_resync == 'true' ||
+       (github.event_name == 'schedule' && needs.preflight.outputs.sync_rate < 100)
+      )
     
     steps:
       - name: 📊 동기화 후 통계 확인
