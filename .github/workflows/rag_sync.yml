@@ -415,7 +415,7 @@ jobs:
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           BASE_DIR=$(dirname "$BASE_URL")
           
-          RESYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_resync"
+          RESYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_resync&source=github_action"
           
           RESPONSE=$(curl -s "$RESYNC_URL")
           
