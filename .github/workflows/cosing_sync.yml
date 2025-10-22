@@ -43,8 +43,8 @@ on:
     inputs:
       force_run:
         description: '강제 실행 (true: 전체 재수집, false: 일반 실행)'
-        required: false
-        default: 'false'
+        required: true
+        default: 'true'
         type: choice
         options:
           - 'false'
@@ -293,3 +293,4 @@ jobs:
           echo "3. CosIng CSV URL 접근 가능 여부 확인" >> $GITHUB_STEP_SUMMARY
           echo "4. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
           echo "5. 서버 메모리/타임아웃 설정 확인" >> $GITHUB_STEP_SUMMARY
+
