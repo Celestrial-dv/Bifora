@@ -1,0 +1,173 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MERGE Data Sync (MFDS + CosIng) Workflow v1.0
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 파일: .github/workflows/merge_sync.yml
+#
+# 📅 생성일: 2025-10-22
+#
+# 📋 기능:
+#   - MFDS와 CosIng 데이터를 total_cosmetic 테이블로 병합하는 작업을 트리거
+#   - 매일 오후 10시 30분(KST) 자동 실행 또는 수동 실행
+#   - merge_sync_webhook.php를 통한 안전한 데이터 병합 시작
+#   - merge_api.php를 폴링하여 작업 완료까지 대기 및 결과 확인
+#
+# 🔗 데이터 흐름:
+#   GitHub Actions → merge_sync_webhook.php → merge_processor.php (백그라운드 실행)
+#
+# 🎯 대상 테이블:
+#   - total_cosmetic (최종 병합 데이터)
+#   - merge_logs (병합 작업 로그)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+name: MERGE Sync v1.0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🕐 실행 트리거 설정
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+on:
+  schedule:
+    # MFDS(22:15)와 CosIng(22:00) 수집이 끝난 후 실행
+    # 매일 오후 10시 30분(한국시간) 실행 (13:30 UTC)
+    - cron: '30 13 * * *'
+  
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: '강제 실행'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  MERGE_SYNC_WEBHOOK_URL: ${{ secrets.MERGE_SYNC_WEBHOOK_URL }}
+  SYNC_TOKEN: ${{ secrets.SYNC_ACTION_TOKEN }} # 명시된 공통 토큰 사용
+
+jobs:
+  preflight:
+    name: 🔍 사전 진단
+    runs-on: ubuntu-latest
+    outputs:
+      can_proceed: ${{ steps.check.outputs.can_proceed }}
+      
+    steps:
+      - name: ⚙️ 환경 변수 확인
+        id: check
+        run: |
+          echo "🔍 환경 변수 검증 중..."
+          if [ -z "${{ env.MERGE_SYNC_WEBHOOK_URL }}" ]; then
+            echo "❌ MERGE_SYNC_WEBHOOK_URL Secret이 설정되지 않았습니다."
+            echo "can_proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          if [ -z "${{ env.SYNC_TOKEN }}" ]; then
+            echo "❌ SYNC_ACTION_TOKEN Secret이 설정되지 않았습니다."
+            echo "can_proceed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "✅ 환경 변수 검증 완료"
+          echo "can_proceed=true" >> $GITHUB_OUTPUT
+      
+      - name: 🌐 서버 연결 테스트
+        run: |
+          echo "🌐 서버 연결 확인 중..."
+          WEBHOOK_URL="${{ env.MERGE_SYNC_WEBHOOK_URL }}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X HEAD "$WEBHOOK_URL" || echo "000")
+          if [ "$HTTP_CODE" != "200" ]; then
+             echo "❌ 서버 연결 실패 (HTTP ${HTTP_CODE})"
+             echo "📍 확인 경로: ${WEBHOOK_URL}"
+             exit 1
+          fi
+          echo "✅ 서버 연결 성공 (HTTP ${HTTP_CODE})"
+
+  sync_merge:
+    name: 🚀 데이터 병합
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.can_proceed == 'true'
+    timeout-minutes: 90 # 워크플로우 전체 타임아웃
+    
+    steps:
+      - name: 🎬 병합 시작
+        id: start_sync
+        run: |
+          echo "🎬 데이터 병합 작업을 시작합니다..."
+          WEBHOOK_URL="${{ env.MERGE_SYNC_WEBHOOK_URL }}"
+          BASE_DIR=$(dirname "$WEBHOOK_URL")
+          echo "BASE_DIR=${BASE_DIR}" >> $GITHUB_OUTPUT
+      
+      - name: 📡 Webhook 호출 (병합 트리거)
+        id: trigger
+        run: |
+          WEBHOOK_URL="${{ env.MERGE_SYNC_WEBHOOK_URL }}"
+          FULL_URL="${WEBHOOK_URL}?source=github&token=${{ env.SYNC_TOKEN }}"
+          
+          echo "📡 Webhook 호출 중..."
+          RESPONSE=$(curl -L -H "User-Agent: GitHub-Actions-Merge-Sync/1.0" -w "\n%{http_code}" -s --max-time 300 "$FULL_URL")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "📥 응답 코드: $HTTP_CODE"
+          echo "📄 응답 내용: $BODY"
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Webhook 호출 실패 (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          
+          SUCCESS=$(echo "$BODY" | jq -r '.success // false')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ 병합 트리거 실패: $(echo "$BODY" | jq -r '.message // "알 수 없는 오류"')"
+            exit 1
+          fi
+          
+          LOG_ID=$(echo "$BODY" | jq -r '.data.log_id // ""')
+          if [ -z "$LOG_ID" ]; then
+            echo "❌ 응답에서 log_id를 찾을 수 없습니다."
+            exit 1
+          fi
+          echo "LOG_ID=${LOG_ID}" >> $GITHUB_OUTPUT
+          echo "✅ Webhook 호출 성공 (Log ID: ${LOG_ID})"
+
+      - name: ⏳ 병합 완료 대기 (폴링)
+        run: |
+          BASE_DIR="${{ steps.start_sync.outputs.BASE_DIR }}"
+          LOG_ID="${{ steps.trigger.outputs.LOG_ID }}"
+          PROGRESS_URL="${BASE_DIR}/merge_api.php"
+          
+          echo "⏳ 서버의 백그라운드 병합 완료를 대기합니다 (Log ID: ${LOG_ID})..."
+          echo "   (최대 60분, 30초 간격으로 상태 확인)"
+
+          # 병합은 오래 걸릴 수 있으므로 타임아웃을 60분(120회 * 30초)으로 설정
+          for i in {1..120}; do
+            RESPONSE=$(curl -s -X POST -H "Content-Type: application/x-www-form-urlencoded" -d "action=progress" "$PROGRESS_URL")
+            
+            STATUS=$(echo "$RESPONSE" | jq -r '.data.status // "UNKNOWN"')
+            PERCENT=$(echo "$RESPONSE" | jq -r '.data.percent // 0' | xargs printf "%.1f")
+            PROCESSED=$(echo "$RESPONSE" | jq -r '.data.total_processed // 0')
+            
+            echo "   [시도 ${i}/120] 현재 상태: ${STATUS} (${PROCESSED}건 처리, ${PERCENT}%)"
+            
+            if [ "$STATUS" == "SUCCESS" ]; then
+              echo "✅ 병합 성공!"
+              exit 0
+            elif [ "$STATUS" == "FAILED" ]; then
+              echo "❌ 병합 실패!"
+              ERROR_MSG=$(echo "$RESPONSE" | jq -r '.data.error_message // "알 수 없는 오류"')
+              echo "   오류 메시지: ${ERROR_MSG}"
+              exit 1
+            fi
+            
+            sleep 30
+          done
+
+          echo "⏰ 시간 초과: 60분 내에 작업이 완료되지 않았습니다."
+          exit 1
+      
+      - name: 📊 최종 결과 요약
+        run: |
+          echo "## 🎉 데이터 병합 완료" >> $GITHUB_STEP_SUMMARY
+          echo "자세한 결과는 서버의 'merge_logs' 테이블과 UI에서 확인하세요."
