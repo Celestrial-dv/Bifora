@@ -53,8 +53,10 @@ name: COSING Sync(EU CosIng) v1.5
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 on:
   schedule:
-    # 매일 오후 10시(한국시간) 실행 (13:00 UTC)
-    - cron: '0 13 * * *'
+    # 매일 오후 23시 00분(한국시간) 실행
+    # 한국시간(KST) = UTC + 9시간
+    # 23:00 KST = 14:00 UTC
+    - cron: '0 14 * * *'
   
   workflow_dispatch:
     inputs:
@@ -261,5 +263,3 @@ jobs:
           echo "2. 웹 방화벽(WAF) 로그 확인" >> $GITHUB_STEP_SUMMARY
           echo "3. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
           
-
-
