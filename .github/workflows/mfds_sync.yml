@@ -39,8 +39,10 @@ name: MFDS Sync(식약처) v1.3
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 on:
   schedule:
-    # 매일 오후 10시 10분(한국시간) 실행 (13:10 UTC)
-    - cron: '15 13 * * *'
+    # 매일 오후 23시 15분(한국시간) 실행
+    # 한국시간(KST) = UTC + 9시간
+    # 23:15 KST = 14:15 UTC
+    - cron: '15 14 * * *'
   
   workflow_dispatch:
     inputs:
@@ -228,6 +230,4 @@ jobs:
           echo "1. GitHub Secrets 설정 확인 (DATA_SYNC_WEBHOOK_URL, SYNC_TOKEN)" >> $GITHUB_STEP_SUMMARY
           echo "2. 웹 방화벽(WAF) 로그에서 차단 여부 확인" >> $GITHUB_STEP_SUMMARY
           echo "3. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
-
           
-
