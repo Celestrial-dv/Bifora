@@ -43,7 +43,7 @@ on:
 
 env:
   MERGE_SYNC_WEBHOOK_URL: ${{ secrets.MERGE_SYNC_WEBHOOK_URL }}
-  SYNC_TOKEN: ${{ secrets.SYNC_ACTION_TOKEN }} # 명시된 공통 토큰 사용
+  SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }} # 명시된 공통 토큰 사용
 
 jobs:
   preflight:
@@ -63,7 +63,7 @@ jobs:
             exit 1
           fi
           if [ -z "${{ env.SYNC_TOKEN }}" ]; then
-            echo "❌ SYNC_ACTION_TOKEN Secret이 설정되지 않았습니다."
+            echo "❌ SYNC_TOKEN Secret이 설정되지 않았습니다."
             echo "can_proceed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -171,3 +171,4 @@ jobs:
         run: |
           echo "## 🎉 데이터 병합 완료" >> $GITHUB_STEP_SUMMARY
           echo "자세한 결과는 서버의 'merge_logs' 테이블과 UI에서 확인하세요."
+          
