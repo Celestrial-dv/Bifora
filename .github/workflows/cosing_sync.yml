@@ -1,10 +1,27 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# COSING (EU CosIng) 화장품 성분 자동 동기화 Workflow v1.1
+# COSING (EU CosIng) 화장품 성분 자동 동기화 Workflow v1.3
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 파일: /biplex/cosing_sync.yml
+#
+# 📅 생성일: 2025-10-21
+# 🔄 최종 수정: v1.3 (2025-10-22)
+#
+# ✅ v1.3 Updates (2025-10-22):
+# - Webhook 호출 시 불필요한 JSON 헤더 제거 (WAF 차단 우회)
+# - 안정적인 요청을 위해 User-Agent 헤더 추가
+# - 신규 Secret 사용: DATA_SYNC_WEBHOOK_URL (MFDS/COSING 전용)
+#
+# ✅ v1.2 Updates (2025-10-22): Secret 변경
+# - 신규 Secret 사용: DATA_SYNC_WEBHOOK_URL (MFDS/COSING 전용)
+# - 기존 CAFE24_SYNC_URL과 분리 (Supabase 전용)
+# 
+# ✅ v1.1 Updates (2025-10-22): 실행 시간 변경 및 동시 실행 지원
+# - 실행 시간: 매주 일요일 03:00 KST → 매일 22:00 KST
+# - MFDS와 동시 실행 가능 (비동기 처리)
 #
 # 📋 기능:
 #   - EU CosIng CSV 파일 자동 다운로드 및 파싱
-#   - 매일 오후 10시(KST) 자동 실행 또는 수동 실행
+#   - 매주 일요일 새벽 3시(KST) 자동 실행 또는 수동 실행
 #   - data_sync_webhook.php를 통한 안전한 데이터 동기화
 #   - api_fetch_logs 테이블에 COSING_CSV 타입으로 로그 기록
 #
@@ -17,16 +34,9 @@
 #
 # ⏰ 실행 주기:
 #   - 매일 1회 (CosIng 데이터 업데이트 확인)
-#
-# 📅 생성일: 2025-10-21
-# 🔄 최종 수정: v1.1 (2025-10-21)
-# 
-# ✅ v1.1 Updates (2025-10-21): 실행 시간 변경 및 동시 실행 지원
-# - 실행 시간: 매주 일요일 03:00 KST → 매일 22:00 KST
-# - MFDS와 동시 실행 가능 (비동기 처리)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-name: COSING Data Sync (EU CosIng 성분) v1.1
+name: COSING Data Sync (EU CosIng 성분) v1.3
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🕐 실행 트리거 설정
@@ -75,32 +85,23 @@ jobs:
         id: check
         run: |
           echo "🔍 환경 변수 검증 중..."
-          
-          # Webhook URL 확인
           if [ -z "${{ env.DATA_SYNC_WEBHOOK_URL }}" ]; then
             echo "❌ DATA_SYNC_WEBHOOK_URL이 설정되지 않았습니다."
             echo "can_proceed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-          
-          # 토큰 확인
           if [ -z "${{ env.SYNC_TOKEN }}" ]; then
             echo "❌ SYNC_TOKEN이 설정되지 않았습니다."
             echo "can_proceed=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-          
           echo "✅ 환경 변수 검증 완료"
           echo "can_proceed=true" >> $GITHUB_OUTPUT
       
       - name: 🌐 서버 연결 테스트
         run: |
           echo "🌐 서버 연결 확인 중..."
-          
-          # 직접 Webhook URL 사용
           WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
-          
-          # HEAD 요청으로 서버 연결 확인
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X HEAD "$WEBHOOK_URL" || echo "000")
           
           if [ "$HTTP_CODE" == "000" ]; then
@@ -117,7 +118,6 @@ jobs:
       - name: 📊 사전 진단 결과
         run: |
           echo "## 🔍 사전 진단 결과" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 상태 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| 환경 변수 | ✅ 정상 |" >> $GITHUB_STEP_SUMMARY
@@ -132,7 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: preflight
     if: needs.preflight.outputs.can_proceed == 'true'
-    timeout-minutes: 90  # 최대 1.5시간 (CSV 다운로드 + 파싱 시간 고려)
+    timeout-minutes: 90
     
     steps:
       - name: 🎬 동기화 시작
@@ -141,34 +141,23 @@ jobs:
           echo "🎬 COSING EU 성분 데이터 수집을 시작합니다..."
           echo "📅 실행 시각: $(date '+%Y-%m-%d %H:%M:%S %Z')"
           echo "🔧 실행 모드: ${{ github.event_name }}"
-          
-          # 직접 Webhook URL 사용
           WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
-          
-          # 🔍 디버깅: URL 확인 (보안상 마지막 20자만 표시)
-          URL_LENGTH=${#WEBHOOK_URL}
-          URL_PREVIEW="${WEBHOOK_URL:0:40}...${WEBHOOK_URL: -20}"
-          echo "🔗 Webhook URL (미리보기): $URL_PREVIEW"
-          echo "📏 URL 전체 길이: ${URL_LENGTH}자"
-          
           echo "WEBHOOK_URL=${WEBHOOK_URL}" >> $GITHUB_OUTPUT
       
       - name: 📡 Webhook 호출 (COSING 동기화 트리거)
         id: trigger
         run: |
           WEBHOOK_URL="${{ steps.start_sync.outputs.WEBHOOK_URL }}"
-          
-          # URL 파라미터 구성
-          # type=cosing: COSING 데이터 수집 지정
-          # source=github: GitHub Actions에서 실행됨을 표시 (session_id 자동 설정)
           FULL_URL="${WEBHOOK_URL}?type=cosing&source=github&token=${{ env.SYNC_TOKEN }}"
           
           echo "📡 Webhook 호출 중..."
           echo "🔗 URL: ${WEBHOOK_URL}?type=cosing&source=github"
           
           # POST 요청으로 동기화 트리거
+          # ⭐️ [수정] WAF 차단을 피하기 위해 불필요한 Content-Type: application/json 헤더를 제거하고,
+          # 안정성을 위해 User-Agent를 추가합니다.
           RESPONSE=$(curl -X POST \
-            -H "Content-Type: application/json" \
+            -H "User-Agent: GitHub-Actions-Cosing-Sync/1.2" \
             -w "\n%{http_code}" \
             -s \
             --max-time 300 \
@@ -181,18 +170,14 @@ jobs:
           echo "📥 응답 코드: $HTTP_CODE"
           echo "📄 응답 내용: $BODY"
           
-          # 응답 저장
           echo "$BODY" > response.json
           
-          # 결과 검증
           if [ "$HTTP_CODE" != "200" ]; then
             echo "❌ Webhook 호출 실패 (HTTP $HTTP_CODE)"
             exit 1
           fi
           
-          # JSON 파싱 (success 필드 확인)
           SUCCESS=$(echo "$BODY" | jq -r '.success // false')
-          
           if [ "$SUCCESS" != "true" ]; then
             echo "❌ 동기화 실패"
             MESSAGE=$(echo "$BODY" | jq -r '.message // "알 수 없는 오류"')
@@ -206,24 +191,14 @@ jobs:
         run: |
           echo "⏳ COSING CSV 다운로드 및 파싱이 진행 중입니다. 10분 대기..."
           echo "💡 cosing_fetch.php가 백그라운드에서 실행 중입니다."
-          echo "📦 약 7,000개 이상의 성분 데이터를 처리합니다."
-          echo "✅ v1.1: 다른 크론잡과 동시 실행 가능 (비동기 처리)"
-          
-          # 10분 대기 (CSV 다운로드 + 파싱 + DB 저장 시간)
-          # - CSV 다운로드: 1-2분
-          # - 파싱 및 저장: 5-8분 (배치 처리)
           sleep 600
-          
           echo "✅ 대기 완료"
       
       - name: 📊 동기화 결과 확인
         id: check_result
         run: |
-          # Webhook URL에서 베이스 디렉토리 추출
           WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
           BASE_DIR=$(dirname "$WEBHOOK_URL")
-          
-          # monitor_api.php를 통해 통계 확인
           STATS_URL="${BASE_DIR}/monitor_api.php?action=statistics"
           
           echo "📊 동기화 결과 조회 중..."
@@ -232,7 +207,6 @@ jobs:
           echo "📄 통계 데이터:"
           echo "$STATS" | jq '.'
           
-          # COSING 통계 추출
           COSING_TOTAL=$(echo "$STATS" | jq -r '.data.cosing.total // 0')
           COSING_LAST_FETCH=$(echo "$STATS" | jq -r '.data.cosing.last_fetch.date // "없음"')
           COSING_STATUS=$(echo "$STATS" | jq -r '.data.cosing.last_fetch.status // "알 수 없음"')
@@ -240,28 +214,17 @@ jobs:
           echo "COSING_TOTAL=${COSING_TOTAL}" >> $GITHUB_OUTPUT
           echo "COSING_LAST_FETCH=${COSING_LAST_FETCH}" >> $GITHUB_OUTPUT
           echo "COSING_STATUS=${COSING_STATUS}" >> $GITHUB_OUTPUT
-          
           echo "✅ 결과 확인 완료"
       
       - name: 📋 최종 결과 요약
         run: |
           echo "## 🎉 COSING 동기화 완료" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 수집 결과" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| 전체 성분 수 | ${{ steps.check_result.outputs.COSING_TOTAL }}개 |" >> $GITHUB_STEP_SUMMARY
           echo "| 마지막 수집 | ${{ steps.check_result.outputs.COSING_LAST_FETCH }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 상태 | ${{ steps.check_result.outputs.COSING_STATUS }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📅 실행 정보" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **실행 시각**: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_STEP_SUMMARY
-          echo "- **실행 방식**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **데이터 소스**: EU CosIng CSV (Archive.org)" >> $GITHUB_STEP_SUMMARY
           
-          # 상태에 따른 최종 메시지
           if [ "${{ steps.check_result.outputs.COSING_STATUS }}" == "SUCCESS" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "✅ **동기화 성공!**" >> $GITHUB_STEP_SUMMARY
@@ -283,14 +246,9 @@ jobs:
       - name: 📧 실패 알림
         run: |
           echo "## ❌ COSING 동기화 실패" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "동기화 작업이 실패했습니다." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔍 확인 사항" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "1. GitHub Secrets 설정 확인 (DATA_SYNC_WEBHOOK_URL, SYNC_TOKEN)" >> $GITHUB_STEP_SUMMARY
-          echo "2. data_sync_webhook.php 파일 존재 확인" >> $GITHUB_STEP_SUMMARY
-          echo "3. CosIng CSV URL 접근 가능 여부 확인" >> $GITHUB_STEP_SUMMARY
-          echo "4. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
-          echo "5. 서버 메모리/타임아웃 설정 확인" >> $GITHUB_STEP_SUMMARY
-
+          echo "2. 웹 방화벽(WAF) 로그 확인" >> $GITHUB_STEP_SUMMARY
+          echo "3. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
+          
