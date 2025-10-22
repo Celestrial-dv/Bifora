@@ -80,7 +80,7 @@ jobs:
             echo "❌ 서버에 연결할 수 없습니다."
             exit 1
           elif [ "$HTTP_CODE" == "404" ]; then
-            echo "⚠️  data_sync_webhook.php 파일을 찾을 수 없습니다. (HTTP 404)"
+            echo "⚠️  merge_sync_webhook.php 파일을 찾을 수 없습니다. (HTTP 404)"
             echo "📍 예상 경로: $WEBHOOK_URL"
             exit 1
           else
@@ -176,4 +176,3 @@ jobs:
         run: |
           echo "## 🎉 데이터 병합 완료" >> $GITHUB_STEP_SUMMARY
           echo "자세한 결과는 서버의 'merge_logs' 테이블과 UI에서 확인하세요."
-          
