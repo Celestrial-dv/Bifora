@@ -1,10 +1,16 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# COSING (EU CosIng) 화장품 성분 자동 동기화 Workflow v1.4
+# COSING (EU CosIng) 화장품 성분 자동 동기화 Workflow v1.5
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 파일: /biplex/cosing_sync.yml
 #
 # 📅 생성일: 2025-10-21
-# 🔄 최종 수정: v1.4 (2025-10-22)
+# 🔄 최종 수정: v1.5 (2025-10-22)
+#
+# ✅ v1.5 Updates (2025-10-22):
+# - [개선] 고정 시간 대기(sleep) 방식을 상태 확인(Polling) 방식으로 변경
+#   - 작업 완료 시 즉시 다음 단계로 진행하여 워크플로우 시간 단축
+#   - 서버의 실제 작업 상태를 주기적으로 확인하여 안정성 향상
+# - [추가] Webhook 호출 시 log_id를 추출하여 상태 확인에 사용
 #
 # ✅ v1.4 Updates (2025-10-22):
 # - [수정] Webhook 호출 방식을 POST에서 GET으로 변경 (WAF 차단 우회)
@@ -40,7 +46,7 @@
 #   - 매일 1회 (CosIng 데이터 업데이트 확인)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-name: COSING Data Sync (EU CosIng 성분) v1.4
+name: COSING Data Sync (EU CosIng 성분) v1.5
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🕐 실행 트리거 설정
@@ -106,15 +112,6 @@ jobs:
           else
             echo "✅ 서버 연결 성공 (HTTP $HTTP_CODE)"
           fi
-      
-      - name: 📊 사전 진단 결과
-        run: |
-          echo "## 🔍 사전 진단 결과" >> $GITHUB_STEP_SUMMARY
-          echo "| 항목 | 상태 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 환경 변수 | ✅ 정상 |" >> $GITHUB_STEP_SUMMARY
-          echo "| 서버 연결 | ✅ 정상 |" >> $GITHUB_STEP_SUMMARY
-          echo "| 실행 가능 | ✅ 예 |" >> $GITHUB_STEP_SUMMARY
 
   sync_cosing:
     name: 🚀 COSING 데이터 동기화
@@ -128,36 +125,30 @@ jobs:
         id: start_sync
         run: |
           echo "🎬 COSING EU 성분 데이터 수집을 시작합니다..."
-          echo "📅 실행 시각: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "🔧 실행 모드: ${{ github.event_name }}"
           WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
-          echo "WEBHOOK_URL=${WEBHOOK_URL}" >> $GITHUB_OUTPUT
+          # Webhook URL에서 스크립트가 있는 디렉토리 경로를 추출
+          BASE_DIR=$(dirname "$WEBHOOK_URL")
+          echo "BASE_DIR=${BASE_DIR}" >> $GITHUB_OUTPUT
       
       - name: 📡 Webhook 호출 (COSING 동기화 트리거)
         id: trigger
         run: |
-          WEBHOOK_URL="${{ steps.start_sync.outputs.WEBHOOK_URL }}"
+          WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
           FULL_URL="${WEBHOOK_URL}?type=cosing&source=github&token=${{ env.SYNC_TOKEN }}"
           
           echo "📡 Webhook 호출 중..."
-          echo "🔗 URL: ${WEBHOOK_URL}?type=cosing&source=github"
-          
-          # ⭐️ [수정 v1.4] WAF 차단을 피하기 위해 POST 요청을 GET 요청으로 변경 (-X POST 제거)
           RESPONSE=$(curl -L \
-            -H "User-Agent: GitHub-Actions-Cosing-Sync/1.4" \
+            -H "User-Agent: GitHub-Actions-Cosing-Sync/1.5" \
             -w "\n%{http_code}" \
             -s \
             --max-time 300 \
             "$FULL_URL")
           
-          # HTTP 상태 코드 추출
           HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
           BODY=$(echo "$RESPONSE" | sed '$d')
           
           echo "📥 응답 코드: $HTTP_CODE"
           echo "📄 응답 내용: $BODY"
-          
-          echo "$BODY" > response.json
           
           if [ "$HTTP_CODE" != "200" ]; then
             echo "❌ Webhook 호출 실패 (HTTP $HTTP_CODE)"
@@ -166,29 +157,63 @@ jobs:
           
           SUCCESS=$(echo "$BODY" | jq -r '.success // false')
           if [ "$SUCCESS" != "true" ]; then
-            echo "❌ 동기화 실패"
-            MESSAGE=$(echo "$BODY" | jq -r '.message // "알 수 없는 오류"')
-            echo "오류 메시지: $MESSAGE"
+            echo "❌ 동기화 트리거 실패: $(echo "$BODY" | jq -r '.message // "알 수 없는 오류"')"
             exit 1
           fi
           
-          echo "✅ Webhook 호출 성공"
-      
-      - name: ⏳ 동기화 진행 대기 (10분)
+          # ⭐️ [추가] 응답에서 log_id를 추출하여 다음 단계에서 사용
+          LOG_ID=$(echo "$BODY" | jq -r '.data.log_id // ""')
+          if [ -z "$LOG_ID" ]; then
+            echo "❌ 응답에서 log_id를 찾을 수 없습니다."
+            exit 1
+          fi
+          echo "LOG_ID=${LOG_ID}" >> $GITHUB_OUTPUT
+          echo "✅ Webhook 호출 성공 (Log ID: ${LOG_ID})"
+
+      # ⭐️ [개선] 고정 대기(sleep)를 상태 확인(polling)으로 변경
+      - name: ⏳ 동기화 완료 대기 (폴링)
         run: |
-          echo "⏳ COSING CSV 다운로드 및 파싱이 진행 중입니다. 10분 대기..."
-          echo "💡 cosing_fetch.php가 백그라운드에서 실행 중입니다."
-          sleep 600
-          echo "✅ 대기 완료"
+          BASE_DIR="${{ steps.start_sync.outputs.BASE_DIR }}"
+          LOG_ID="${{ steps.trigger.outputs.LOG_ID }}"
+          # cosing_fetch.php에 있는 get_cosing_progress 액션을 호출
+          PROGRESS_URL="${BASE_DIR}/cosing_fetch.php"
+          
+          echo "⏳ 서버의 백그라운드 작업 완료를 대기합니다 (Log ID: ${LOG_ID})..."
+          echo "   (최대 15분, 30초 간격으로 상태 확인)"
+
+          for i in {1..30}; do # 최대 30회 시도 (30 * 30초 = 900초 = 15분)
+            # POST 요청으로 진행 상태 조회
+            RESPONSE=$(curl -s -X POST \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "action=get_cosing_progress" \
+              "$PROGRESS_URL")
+            
+            STATUS=$(echo "$RESPONSE" | jq -r '.data.status // "UNKNOWN"')
+            MESSAGE=$(echo "$RESPONSE" | jq -r '.data.error_message // ""' | tr -d '\n\r') # 메시지에서 개행문자 제거
+            
+            echo "   [시도 ${i}/30] 현재 상태: ${STATUS} - ${MESSAGE}"
+            
+            if [ "$STATUS" == "SUCCESS" ]; then
+              echo "✅ 동기화 성공!"
+              exit 0
+            elif [ "$STATUS" == "FAILED" ]; then
+              echo "❌ 동기화 실패!"
+              exit 1
+            fi
+            
+            sleep 30
+          done
+
+          echo "⏰ 시간 초과: 15분 내에 작업이 완료되지 않았습니다."
+          exit 1
       
       - name: 📊 동기화 결과 확인
         id: check_result
         run: |
-          WEBHOOK_URL="${{ env.DATA_SYNC_WEBHOOK_URL }}"
-          BASE_DIR=$(dirname "$WEBHOOK_URL")
+          BASE_DIR="${{ steps.start_sync.outputs.BASE_DIR }}"
           STATS_URL="${BASE_DIR}/monitor_api.php?action=statistics"
           
-          echo "📊 동기화 결과 조회 중..."
+          echo "📊 최종 통계 조회 중..."
           STATS=$(curl -s "$STATS_URL")
           
           echo "📄 통계 데이터:"
@@ -210,7 +235,7 @@ jobs:
           echo "|------|------|" >> $GITHUB_STEP_SUMMARY
           echo "| 전체 성분 수 | ${{ steps.check_result.outputs.COSING_TOTAL }}개 |" >> $GITHUB_STEP_SUMMARY
           echo "| 마지막 수집 | ${{ steps.check_result.outputs.COSING_LAST_FETCH }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 상태 | ${{ steps.check_result.outputs.COSING_STATUS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 최종 상태 | ${{ steps.check_result.outputs.COSING_STATUS }} |" >> $GITHUB_STEP_SUMMARY
           
           if [ "${{ steps.check_result.outputs.COSING_STATUS }}" == "SUCCESS" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -232,8 +257,7 @@ jobs:
           echo "## ❌ COSING 동기화 실패" >> $GITHUB_STEP_SUMMARY
           echo "동기화 작업이 실패했습니다." >> $GITHUB_STEP_SUMMARY
           echo "### 🔍 확인 사항" >> $GITHUB_STEP_SUMMARY
-          echo "1. GitHub Secrets 설정 확인 (DATA_SYNC_WEBHOOK_URL, SYNC_TOKEN)" >> $GITHUB_STEP_SUMMARY
-          echo "2. 웹 방화벽(WAF) 로그에서 차단 여부 확인" >> $GITHUB_STEP_SUMMARY
+          echo "1. GitHub Secrets 설정 확인" >> $GITHUB_STEP_SUMMARY
+          echo "2. 웹 방화벽(WAF) 로그 확인" >> $GITHUB_STEP_SUMMARY
           echo "3. 서버 로그 확인 (api_fetch_logs 테이블)" >> $GITHUB_STEP_SUMMARY
-
           
