@@ -75,12 +75,17 @@ jobs:
           echo "🌐 서버 연결 확인 중..."
           WEBHOOK_URL="${{ env.MERGE_SYNC_WEBHOOK_URL }}"
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X HEAD "$WEBHOOK_URL" || echo "000")
-          if [ "$HTTP_CODE" != "200" ]; then
-             echo "❌ 서버 연결 실패 (HTTP ${HTTP_CODE})"
-             echo "📍 확인 경로: ${WEBHOOK_URL}"
-             exit 1
+
+          if [ "$HTTP_CODE" == "000" ]; then
+            echo "❌ 서버에 연결할 수 없습니다."
+            exit 1
+          elif [ "$HTTP_CODE" == "404" ]; then
+            echo "⚠️  data_sync_webhook.php 파일을 찾을 수 없습니다. (HTTP 404)"
+            echo "📍 예상 경로: $WEBHOOK_URL"
+            exit 1
+          else
+            echo "✅ 서버 연결 성공 (HTTP $HTTP_CODE)"
           fi
-          echo "✅ 서버 연결 성공 (HTTP ${HTTP_CODE})"
 
   sync_merge:
     name: 🚀 데이터 병합
