@@ -32,7 +32,7 @@ name: RAG Knowledge Base Sync (Manual Resync Control)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📌 최적화 설정 요약
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ✅ 배치 크기: 100건 (Supabase timeout 방지)
+# ✅ 배치 크기: 80건 (Supabase timeout 방지 및 호스팅사 권고 준수) # [수정] 호스팅사 권고로 배치 크기 조정
 # ✅ 워커 수: 2개 (API rate limit 준수)
 # ✅ 타임아웃: 180분 (충분한 처리 시간)
 # ✅ 대기 시간: 3초 (API 부하 분산)
@@ -52,12 +52,13 @@ on:
   workflow_dispatch:
     inputs:
       batch_size:
-        description: '배치 크기 (기본값: 100)'
+        description: '배치 크기 (기본값: 80)' # [수정] 호스팅사 권고로 기본값 설명 변경
         required: false
-        default: '100'
+        default: '80' # [수정] 호스팅사 권고로 기본값을 100에서 80으로 조정
         type: choice
         options:
           - '50'
+          - '80' # [수정] 옵션에 80 추가
           - '100'
           - '150'
           - '200'
@@ -123,13 +124,13 @@ jobs:
         run: |
           # 스케줄 실행 vs 수동 실행 구분
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            BATCH_SIZE=100
+            BATCH_SIZE=80 # [수정] 호스팅사 권고로 스케줄 실행 시 기본 배치 크기를 100에서 80으로 조정
             WORKERS=2
             MAX_ITERATIONS=500
             ENABLE_RESYNC=false
             echo "📅 스케줄 실행: 기본값 사용 (재동기화 비활성화)"
           else
-            BATCH_SIZE="${{ github.event.inputs.batch_size || '100' }}"
+            BATCH_SIZE="${{ github.event.inputs.batch_size || '80' }}" # [수정] 호스팅사 권고로 수동 실행 시 폴백 기본값을 100에서 80으로 조정
             WORKERS="${{ github.event.inputs.workers || '2' }}"
             MAX_ITERATIONS="${{ github.event.inputs.max_iterations || '500' }}"
             ENABLE_RESYNC="${{ github.event.inputs.enable_resync || 'false' }}"
@@ -415,7 +416,7 @@ jobs:
           BASE_URL="${{ env.CAFE24_SYNC_URL }}"
           BASE_DIR=$(dirname "$BASE_URL")
           
-          RESYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_resync&source=github_action"
+          RESYNC_URL="${BASE_DIR}/sync_stats.php?t=${{ env.SYNC_TOKEN }}&action=auto_resync"
           
           RESPONSE=$(curl -s "$RESYNC_URL")
           
@@ -529,4 +530,4 @@ jobs:
           else
             echo "ℹ️ 정리할 로그 없음"
           fi
-
+          
